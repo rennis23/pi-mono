@@ -1,0 +1,40 @@
+{
+	"name": "@rennis23/pi-hello",
+	"version": "0.1.0",
+	"description": "Pi extension. A minimal example that registers a /hello command.",
+	"keywords": [
+		"pi-package",
+		"pi-extension"
+	],
+	"type": "module",
+	"license": "MIT",
+	"author": "rennis23",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/rennis23/pi-mono.git",
+		"directory": "packages/pi-hello"
+	},
+	"homepage": "https://github.com/rennis23/pi-mono/tree/main/packages/pi-hello#readme",
+	"bugs": {
+		"url": "https://github.com/rennis23/pi-mono/issues"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"test": "vitest run"
+	},
+	"files": [
+		"index.ts",
+		"README.md",
+		"LICENSE"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	}
+}

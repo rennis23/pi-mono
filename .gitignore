@@ -1,0 +1,27 @@
+# No trailing slash: also matches a stray node_modules SYMLINK.
+node_modules
+packages/*/node_modules
+
+*.log
+.DS_Store
+*.tsbuildinfo
+*.cpuprofile
+
+.pi/
+
+# Editor files
+.vscode/
+.zed/
+.idea/
+*.swp
+*.swo
+*~
+
+# Agent metadata
+.claude/
+
+# Package specific
+.npm/
+coverage/
+.nyc_output/
+packages/*/dist/

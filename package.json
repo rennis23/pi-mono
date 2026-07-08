@@ -1,0 +1,37 @@
+{
+	"name": "pi-mono",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"workspaces": [
+		"packages/*"
+	],
+	"scripts": {
+		"check": "biome check --write --error-on-warnings . && tsc --noEmit -p tsconfig.base.json",
+		"test": "vitest run",
+		"coverage": "vitest run --coverage",
+		"version:patch": "npm version patch -ws --no-git-tag-version && node scripts/sync-versions.js && shx rm -rf node_modules packages/*/node_modules package-lock.json && npm install",
+		"version:minor": "npm version minor -ws --no-git-tag-version && node scripts/sync-versions.js && shx rm -rf node_modules packages/*/node_modules package-lock.json && npm install",
+		"version:major": "npm version major -ws --no-git-tag-version && node scripts/sync-versions.js && shx rm -rf node_modules packages/*/node_modules package-lock.json && npm install",
+		"prepublishOnly": "npm run check",
+		"publish": "npm run prepublishOnly && npm publish -ws --access public",
+		"publish:dry": "npm run prepublishOnly && npm publish -ws --access public --dry-run",
+		"release:patch": "node scripts/release.mjs patch",
+		"release:minor": "node scripts/release.mjs minor",
+		"release:major": "node scripts/release.mjs major",
+		"prepare": "husky"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.0",
+		"@types/node": "^22.19.19",
+		"@vitest/coverage-v8": "^4.0.0",
+		"husky": "^9.1.7",
+		"shx": "^0.4.0",
+		"typescript": "^6.0.3",
+		"vitest": "^4.0.0"
+	},
+	"engines": {
+		"node": ">=22.0.0",
+		"npm": ">=11.0.0"
+	}
+}
