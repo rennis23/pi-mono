@@ -6,6 +6,7 @@
  * Usage:
  *   node scripts/release.mjs <major|minor|patch>
  *   node scripts/release.mjs <x.y.z>
+ *   node scripts/release.mjs <major|minor|patch|x.y.z> --dry-run
  */
 
 import { execSync } from "node:child_process";
@@ -15,9 +16,14 @@ import { join } from "node:path";
 const RELEASE_TARGET = process.argv[2];
 const BUMP_TYPES = new Set(["major", "minor", "patch"]);
 const SEMVER_RE = /^\d+\.\d+\.\d+$/;
+const DRY_RUN = process.argv.includes("--dry-run");
+
+if (DRY_RUN) {
+	console.log("[DRY RUN] No destructive operations will be executed.\n");
+}
 
 if (!RELEASE_TARGET || (!BUMP_TYPES.has(RELEASE_TARGET) && !SEMVER_RE.test(RELEASE_TARGET))) {
-	console.error("Usage: node scripts/release.mjs <major|minor|patch|x.y.z>");
+	console.error("Usage: node scripts/release.mjs <major|minor|patch|x.y.z> [--dry-run]");
 	process.exit(1);
 }
 
@@ -34,8 +40,21 @@ function run(cmd, options = {}) {
 	}
 }
 
+function runSafe(cmd, options = {}) {
+	if (DRY_RUN) {
+		console.log(`[DRY RUN] Would run: ${cmd}`);
+		return null;
+	}
+	return run(cmd, options);
+}
+
 function getVersion() {
-	const pkg = JSON.parse(readFileSync("packages/pi-hello/package.json", "utf-8"));
+	const packagesDir = "packages";
+	const dirs = readdirSync(packagesDir, { withFileTypes: true }).filter((d) => d.isDirectory());
+	if (dirs.length === 0) {
+		throw new Error("No workspace packages found under packages/");
+	}
+	const pkg = JSON.parse(readFileSync(join(packagesDir, dirs[0].name, "package.json"), "utf-8"));
 	return pkg.version;
 }
 
@@ -149,12 +168,12 @@ console.log();
 
 console.log("Committing and tagging...");
 stageChangedFiles();
-run(`git commit -m "Release v${version}"`);
-run(`git tag v${version}`);
+runSafe(`git commit -m "Release v${version}"`);
+runSafe(`git tag v${version}`);
 console.log();
 
 console.log("Publishing to npm...");
-run("npm run publish");
+runSafe("npm run publish");
 console.log();
 
 console.log("Reinstating [Unreleased] sections for next cycle...");
@@ -163,12 +182,12 @@ console.log();
 
 console.log("Committing changelog updates...");
 stageChangedFiles();
-run(`git commit -m "Add [Unreleased] section for next cycle"`);
+runSafe(`git commit -m "Add [Unreleased] section for next cycle"`);
 console.log();
 
 console.log("Pushing to remote...");
-run("git push origin main");
-run(`git push origin v${version}`);
+runSafe("git push origin master");
+runSafe(`git push origin v${version}`);
 console.log();
 
 console.log(`=== Released v${version} ===`);

@@ -14,7 +14,7 @@
 		"url": "git+https://github.com/rennis23/pi-mono.git",
 		"directory": "packages/pi-hello"
 	},
-	"homepage": "https://github.com/rennis23/pi-mono/tree/main/packages/pi-hello#readme",
+	"homepage": "https://github.com/rennis23/pi-mono/tree/master/packages/pi-hello#readme",
 	"bugs": {
 		"url": "https://github.com/rennis23/pi-mono/issues"
 	},
@@ -35,6 +35,6 @@
 		]
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-coding-agent": "*"
+		"@earendil-works/pi-coding-agent": ">=1.0.0"
 	}
 }

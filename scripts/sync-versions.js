@@ -3,6 +3,9 @@
 /**
  * Syncs all @rennis23/pi-* intra-monorepo package dependency versions
  * to match their current versions. Enforces lockstep versioning.
+ *
+ * Writes are atomic: all changes are accumulated, then written in one
+ * pass. If any write fails, previously written files are rolled back.
  */
 
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -44,7 +47,10 @@ if (versions.size > 1) {
 
 console.log("\n✅ All packages at same version (lockstep)");
 
+// Phase 1: Collect all changes in memory
+const pendingWrites = [];
 let totalUpdates = 0;
+
 for (const pkg of Object.values(packages)) {
 	let updated = false;
 
@@ -79,12 +85,37 @@ for (const pkg of Object.values(packages)) {
 	}
 
 	if (updated) {
-		writeFileSync(pkg.path, `${JSON.stringify(pkg.data, null, "\t")}\n`);
+		// Keep a backup of the original content for rollback
+		const originalContent = readFileSync(pkg.path, "utf8");
+		const newContent = `${JSON.stringify(pkg.data, null, "\t")}\n`;
+		pendingWrites.push({ path: pkg.path, originalContent, newContent });
 	}
 }
 
 if (totalUpdates === 0) {
 	console.log("\nAll inter-package dependencies already in sync.");
-} else {
+	process.exit(0);
+}
+
+// Phase 2: Atomic write — write all files. Roll back if any fails.
+const written = [];
+try {
+	for (const { path, newContent } of pendingWrites) {
+		writeFileSync(path, newContent);
+		written.push(path);
+	}
 	console.log(`\n✅ Updated ${totalUpdates} dependency version(s)`);
+} catch (e) {
+	console.error(`\n❌ Write failed for ${e.path || "unknown"}: ${e.message}`);
+	console.error("Rolling back changes...");
+	for (const { path, originalContent } of pendingWrites) {
+		if (written.includes(path)) {
+			try {
+				writeFileSync(path, originalContent);
+			} catch (rollbackErr) {
+				console.error(`  Failed to roll back ${path}: ${rollbackErr.message}`);
+			}
+		}
+	}
+	process.exit(1);
 }

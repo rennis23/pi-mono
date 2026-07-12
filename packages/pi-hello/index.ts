@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-export default function (pi: ExtensionAPI) {
+export default function helloExtension(pi: ExtensionAPI) {
 	pi.registerCommand("hello", {
 		description: "Say hello from pi-hello",
 		handler: async (args, ctx) => {
