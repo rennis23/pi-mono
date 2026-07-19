@@ -1,0 +1,13 @@
+#!/bin/sh
+
+echo "Running formatting, linting, and type checking..."
+npm run check
+if [ $? -ne 0 ]; then
+  echo "❌ Checks failed. Please fix the errors before committing."
+  exit 1
+fi
+
+# Restage any tracked files that biome --write may have modified.
+git add -u
+
+echo "✅ All pre-commit checks passed!"
