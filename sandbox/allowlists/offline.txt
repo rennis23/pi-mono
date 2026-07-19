@@ -1,0 +1,3 @@
+# Offline mode — intentionally empty.
+# When this list is selected, run-agent.sh omits --net entirely: no outbound
+# networking and no DNS resolution inside the VM.

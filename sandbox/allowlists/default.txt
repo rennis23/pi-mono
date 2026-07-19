@@ -1,0 +1,29 @@
+# Egress allowlist for the pi-agent sandbox (one hostname per line, # = comment)
+# Consumed by run-agent.sh → --allow-host flags (implies --net + DNS filtering)
+
+# pi.dev — model catalogs, version checks (pi fetches /api/models/providers/<id>
+# for every configured provider; without this, /model shows "Could not refresh N
+# model catalogs; showing cached models.")
+pi.dev
+
+# LLM providers
+api.anthropic.com
+api.openai.com
+opencode.ai
+
+# GitHub Copilot (built-in provider; device OAuth uses github.com/api.github.com below)
+api.githubcopilot.com
+copilot-proxy.githubusercontent.com
+
+# AWS Bedrock runtime (add regions as needed)
+bedrock-runtime.us-east-1.amazonaws.com
+bedrock-runtime.us-west-2.amazonaws.com
+
+# npm
+registry.npmjs.org
+
+# GitHub (git over SSH uses port 22; api.github.com for gh CLI)
+github.com
+api.github.com
+raw.githubusercontent.com
+objects.githubusercontent.com
