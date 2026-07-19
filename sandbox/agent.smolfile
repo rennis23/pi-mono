@@ -1,0 +1,30 @@
+# pi-agent sandbox — declarative VM config for smolvm.
+# Used by run-agent.sh via `smolvm machine run -s agent.smolfile` (ephemeral)
+# or `smolvm machine create -s agent.smolfile` (persistent).
+#
+# NOTE: `image` points at the local archive produced by build-image.sh.
+# Paths in a Smolfile are resolved relative to the Smolfile location.
+
+image = "images/pi-agent.tar"
+workdir = "/workspace"
+
+# Resources (defaults: 2 vCPU / 4096 MiB elastic / 20 GiB storage)
+cpus = 2
+memory = 4096
+
+# Networking is default-deny. Egress hosts are passed on the CLI by
+# run-agent.sh from allowlists/<name>.txt so the preset can be switched
+# without editing this file. CLI flags merge with/override Smolfile values.
+
+# Credential forwarding: host SSH agent (git push/pull) — private keys
+# never enter the VM.
+[auth]
+ssh_agent = true
+
+# Secrets are NOT declared here: a [secrets] ref fails hard when the host env
+# var is unset. run-agent.sh adds --secret-env only for keys that are set.
+
+[dev]
+# Project dir is mounted by run-agent.sh: -v "$PWD:/workspace".
+# (Listed here for reference; CLI -v flags merge with this list.)
+volumes = []

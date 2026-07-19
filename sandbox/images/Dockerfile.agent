@@ -1,0 +1,28 @@
+# pi-coding-agent sandbox image (arm64 Linux guest on Apple Silicon)
+FROM docker.io/library/node:22-alpine
+
+RUN apk add --no-cache \
+		bash \
+		bat \
+		ca-certificates \
+		curl \
+		fd \
+		git \
+		github-cli \
+		openssh-client \
+		ripgrep
+
+# pi-coding-agent + pi package manager
+RUN npm install -g @earendil-works/pi-coding-agent
+
+# Non-root user for the agent session. UID/GID 501 matches the default macOS
+# user so mounted host dirs (e.g. /workspace) stay writable in the guest.
+RUN addgroup -g 501 agent \
+	&& adduser -D -u 501 -G agent -h /home/agent agent \
+	&& mkdir -p /workspace \
+	&& chown agent:agent /workspace
+
+USER agent
+WORKDIR /workspace
+
+ENTRYPOINT ["pi"]
