@@ -67,7 +67,10 @@ Two built-in pi providers also work in the sandbox:
 ## Egress presets
 
 Edit or add files in `allowlists/` (one hostname per line). The default preset covers
-Anthropic/OpenAI/opencode APIs, the npm registry, and GitHub.
+Anthropic/OpenAI/opencode APIs, the npm registry, and GitHub, plus `pi.dev` (model
+catalogs + version checks — without it `/model` warns "Could not refresh N model
+catalogs"). In offline mode `PI_OFFLINE=1` is set in the guest so pi skips catalog
+refreshes entirely.
 
 ## Persistent machine lifecycle
 

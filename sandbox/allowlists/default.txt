@@ -1,6 +1,11 @@
 # Egress allowlist for the pi-agent sandbox (one hostname per line, # = comment)
 # Consumed by run-agent.sh → --allow-host flags (implies --net + DNS filtering)
 
+# pi.dev — model catalogs, version checks (pi fetches /api/models/providers/<id>
+# for every configured provider; without this, /model shows "Could not refresh N
+# model catalogs; showing cached models.")
+pi.dev
+
 # LLM providers
 api.anthropic.com
 api.openai.com

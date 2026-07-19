@@ -75,6 +75,12 @@ for key in AWS_REGION AWS_DEFAULT_REGION; do
 	fi
 done
 
+# Fully offline: tell pi to skip all model-catalog network access (avoids
+# "Could not refresh N model catalogs" warnings in /model)
+if [ "${#NET_ARGS[@]}" -eq 0 ]; then
+	ENV_ARGS+=(-e PI_OFFLINE=1)
+fi
+
 CMD=(pi)
 [ "$SHELL" -eq 1 ] && CMD=(bash)
 # Append any extra args after -- to the guest command
@@ -86,12 +92,14 @@ if [ "$PERSISTENT" -eq 1 ]; then
 	if ! smolvm machine status --name "$NAME" >/dev/null 2>&1; then
 		echo "== creating persistent machine '${NAME}' =="
 		smolvm machine create --name "$NAME" -s "$SMOLFILE" \
-			-v "$WORKSPACE:/workspace" "${NET_ARGS[@]}" "${SECRET_ARGS[@]}" "${ENV_ARGS[@]}"
+			-v "$WORKSPACE:/workspace" \
+			${NET_ARGS[@]+"${NET_ARGS[@]}"} ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} ${ENV_ARGS[@]+"${ENV_ARGS[@]}"}
 	fi
 	smolvm machine start --name "$NAME"
 	exec smolvm machine exec --name "$NAME" -it -- "${CMD[@]}"
 else
 	exec smolvm machine run -s "$SMOLFILE" -it \
-		-v "$WORKSPACE:/workspace" "${NET_ARGS[@]}" "${SECRET_ARGS[@]}" "${ENV_ARGS[@]}" \
+		-v "$WORKSPACE:/workspace" \
+		${NET_ARGS[@]+"${NET_ARGS[@]}"} ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
 		-- "${CMD[@]}"
 fi

@@ -53,6 +53,10 @@ for key in ANTHROPIC_API_KEY OPENAI_API_KEY OPENCODE_API_KEY AWS_BEARER_TOKEN_BE
 	if [ -n "${!key:-}" ]; then
 		ok "$key set"
 		found_key=1
+		case "${!key}" in
+			*[[:space:]]*|\"*|\'*)
+				warn "$key contains whitespace or quotes — this usually breaks API auth (401)" ;;
+		esac
 	fi
 done
 if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
