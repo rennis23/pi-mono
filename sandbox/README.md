@@ -40,6 +40,10 @@ run-agent.sh [--workspace DIR] [--allowlist NAME] [--persistent [--name NAME]]
 | `--persistent` | named machine; package installs survive across sessions |
 | `--name NAME` | persistent machine name (default: `pi-agent`) |
 | `--shell` | open `bash` in the VM instead of launching pi |
+| `--skill PATH` | mount a host skill file or skills directory read-only and load it (repeatable) |
+| `--extension PATH` | mount a host extension file/dir read-only and load it (repeatable) |
+| `--no-global-skills` | skip the always-on `sandbox/skills` mount |
+| `--no-global-extensions` | skip the always-on `sandbox/extensions` mount |
 
 ## Providers
 
@@ -63,6 +67,41 @@ Two built-in pi providers also work in the sandbox:
   Then e.g. `pi --provider amazon-bedrock --model us.anthropic.claude-sonnet-4-20250514-v1:0`.
   Note: `AWS_PROFILE` (shared `~/.aws` files) is intentionally not supported — the host
   AWS config stays outside the VM.
+
+## Skills & extensions
+
+Two loading modes:
+
+**1. Always loaded (curated global set)** — `sandbox/skills/` and
+`sandbox/extensions/` are mounted read-only into the guest under `/opt` and
+symlinked to `~/.pi/agent/skills` and `~/.pi/agent/extensions`, so pi
+auto-discovers them on
+every run. (The mounts live under `/opt` because smolvm creates mount-point
+parents as root; mounting under `/home` would leave `~/.pi/agent` unwritable
+for the agent user.) These are curated copies, *not* symlinks to your host pi config —
+the VM only sees what you explicitly place there. `sandbox/pi-global/settings.json`
+is mounted (as a directory at `/opt/pi-global`, symlinked into the pi home —
+virtiofs cannot mount single files) as the guest pi settings; it sets
+`defaultProjectTrust: "always"` (the
+microVM is the trust boundary, so the interactive trust prompt is skipped).
+Skip these mounts per-run with `--no-global-skills` / `--no-global-extensions`.
+
+**2. Scoped / ad hoc:**
+- *Per-directory* — a project mounted at `/workspace` that contains
+  `.pi/skills/` or `.pi/extensions/` gets them auto-loaded only for that
+  project (no trust prompt, thanks to the guest settings above).
+- *Ad hoc per run* — repeatable flags. Directories are mounted read-only
+  under `/opt/adhoc/...` in the guest (live view of the host); single files
+  cannot be mounted (virtiofs limitation) and are staged (copied) instead,
+  so host edits to a single file mid-run are not reflected in the guest:
+
+  ```bash
+  run-agent.sh --skill ~/.agents/skills \
+               --extension ./packages/pi-hello/index.ts
+  ```
+
+  In `--persistent` mode these mounts are applied when the machine is
+  *created*; to change them, delete and recreate the machine.
 
 ## Egress presets
 
