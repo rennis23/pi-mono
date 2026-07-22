@@ -1,4 +1,5 @@
 {
 	"$schema": "https://pi.dev/schemas/settings.json",
-	"defaultProjectTrust": "always"
+	"defaultProjectTrust": "always",
+	"packages": ["npm:pi-subagents"]
 }

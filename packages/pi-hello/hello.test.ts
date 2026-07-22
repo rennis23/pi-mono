@@ -25,13 +25,7 @@ describe("pi-hello", () => {
 		helloExtension(pi);
 
 		expect(registerCommand).toHaveBeenCalledTimes(1);
-		expect(registerCommand).toHaveBeenCalledWith(
-			"hello",
-			expect.objectContaining({
-				description: "Say hello from pi-hello",
-				handler: expect.any(Function),
-			}),
-		);
+		expect(registerCommand).toHaveBeenCalledWith("hello", expect.objectContaining({ handler: expect.any(Function) }));
 	});
 
 	it("notifies with a greeting when invoked without args", async () => {

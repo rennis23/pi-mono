@@ -132,38 +132,29 @@ STAGING_DIRS=()
 cleanup() { [ ${#STAGING_DIRS[@]} -eq 0 ] || rm -rf "${STAGING_DIRS[@]}"; }
 trap cleanup EXIT
 STAGED=0
-for p in ${SKILL_PATHS[@]+"${SKILL_PATHS[@]}"}; do
+
+# Mount a single ad-hoc path (--skill / --extension) read-only via volume,
+# staging single files into temp dirs since virtiofs cannot mount individual files.
+# $1 = host path, $2 = dest subdir (e.g. skills), $3 = pi flag (e.g. --skill).
+mount_adhoc_path() {
+	local p="$1" dest
 	p="$(cd "$(dirname "$p")" && pwd)/$(basename "$p")"
-	[ -e "$p" ] || { echo "error: skill path not found: $p" >&2; exit 1; }
+	[ -e "$p" ] || { echo "error: $2 path not found: $p" >&2; exit 1; }
 	if [ -d "$p" ]; then
-		dest="/opt/adhoc/skills/$(basename "$p")"
+		dest="/opt/adhoc/$2/$(basename "$p")"
 		VOL_ARGS+=(-v "$p:$dest:ro")
 	else
 		STAGED=$((STAGED+1))
-		stage="$(mktemp -d "${TMPDIR:-/tmp}/pi-sandbox.XXXXXX")"
+		local stage="$(mktemp -d "${TMPDIR:-/tmp}/pi-sandbox.XXXXXX")"
 		STAGING_DIRS+=("$stage")
 		cp "$p" "$stage/"
 		VOL_ARGS+=(-v "$stage:/opt/adhoc/files/$STAGED:ro")
 		dest="/opt/adhoc/files/$STAGED/$(basename "$p")"
 	fi
-	PI_EXTRA_ARGS+=(--skill "$dest")
-done
-for p in ${EXT_PATHS[@]+"${EXT_PATHS[@]}"}; do
-	p="$(cd "$(dirname "$p")" && pwd)/$(basename "$p")"
-	[ -e "$p" ] || { echo "error: extension path not found: $p" >&2; exit 1; }
-	if [ -d "$p" ]; then
-		dest="/opt/adhoc/extensions/$(basename "$p")"
-		VOL_ARGS+=(-v "$p:$dest:ro")
-	else
-		STAGED=$((STAGED+1))
-		stage="$(mktemp -d "${TMPDIR:-/tmp}/pi-sandbox.XXXXXX")"
-		STAGING_DIRS+=("$stage")
-		cp "$p" "$stage/"
-		VOL_ARGS+=(-v "$stage:/opt/adhoc/files/$STAGED:ro")
-		dest="/opt/adhoc/files/$STAGED/$(basename "$p")"
-	fi
-	PI_EXTRA_ARGS+=(-e "$dest")
-done
+	PI_EXTRA_ARGS+=("$3" "$dest")
+}
+for p in ${SKILL_PATHS[@]+"${SKILL_PATHS[@]}"}; do mount_adhoc_path "$p" skills --skill; done
+for p in ${EXT_PATHS[@]+"${EXT_PATHS[@]}"}; do mount_adhoc_path "$p" extensions -e; done
 
 if [ "$SHELL" -eq 1 ]; then
 	CMD=(bash)
