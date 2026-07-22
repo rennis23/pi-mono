@@ -25,4 +25,8 @@ RUN addgroup -g 501 agent \
 USER agent
 WORKDIR /workspace
 
+# Pre-cache pi-subagents so first startup doesn't re-download.
+# Also declared in sandbox/pi-global/settings.json (packages key).
+RUN pi install npm:pi-subagents
+
 ENTRYPOINT ["pi"]
