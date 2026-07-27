@@ -13,6 +13,7 @@
 #   --shell             drop into a VM shell instead of running pi
 #   --skill PATH        mount host skill file or skills directory read-only and load it (repeatable)
 #   --extension PATH    mount host extension file/dir read-only and load it (repeatable)
+#   --config PATH:NAME  mount host config directory read-write into guest ~/.pi/agent/NAME/ (repeatable)
 #   --no-global-skills  skip the always-on sandbox/skills mount
 #   --no-global-extensions
 #                       skip the always-on sandbox/extensions mount
@@ -31,6 +32,7 @@ GLOBAL_SKILLS=1
 GLOBAL_EXTS=1
 SKILL_PATHS=()
 EXT_PATHS=()
+CONFIG_PATHS=()
 
 usage() { sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0; }
 
@@ -43,6 +45,7 @@ while [ $# -gt 0 ]; do
 		--shell)      SHELL=1; shift ;;
 		--skill)      SKILL_PATHS+=("$2"); shift 2 ;;
 		--extension)  EXT_PATHS+=("$2"); shift 2 ;;
+		--config)     CONFIG_PATHS+=("$2"); shift 2 ;;
 		--no-global-skills)     GLOBAL_SKILLS=0; shift ;;
 		--no-global-extensions) GLOBAL_EXTS=0; shift ;;
 		-h|--help)    usage ;;
@@ -156,6 +159,30 @@ mount_adhoc_path() {
 for p in ${SKILL_PATHS[@]+"${SKILL_PATHS[@]}"}; do mount_adhoc_path "$p" skills --skill; done
 for p in ${EXT_PATHS[@]+"${EXT_PATHS[@]}"}; do mount_adhoc_path "$p" extensions -e; done
 
+# Mount extension config directories read-write into the guest pi home.
+# This is intended for extensions like Langfuse that store credentials under
+# ~/.pi/agent/<name>/config.json. The host directory remains the source of truth.
+# $1 = host path, $2 = guest name under ~/.pi/agent/.
+mount_config_dir() {
+	local p="$1" name="$2"
+	p="$(cd "$(dirname "$p")" && pwd)/$(basename "$p")"
+	[ -d "$p" ] || { echo "error: --config path must be a directory: $p" >&2; exit 1; }
+	VOL_ARGS+=(-v "$p:/home/agent/.pi/agent/$name:rw")
+}
+for cfg in ${CONFIG_PATHS[@]+"${CONFIG_PATHS[@]}"}; do
+	case "$cfg" in
+		*:*)
+			host_path="${cfg%:*}"
+			name="${cfg#*:}"
+			mount_config_dir "$host_path" "$name"
+			;;
+		*)
+			echo "error: --config requires PATH:NAME format, got: $cfg" >&2
+			exit 1
+			;;
+	esac
+done
+
 if [ "$SHELL" -eq 1 ]; then
 	CMD=(bash)
 else
@@ -172,8 +199,8 @@ cd "$SANDBOX_DIR"  # Smolfile-relative image path
 
 if [ "$PERSISTENT" -eq 1 ]; then
 	if smolvm machine status --name "$NAME" >/dev/null 2>&1; then
-		if [ ${#SKILL_PATHS[@]} -gt 0 ] || [ ${#EXT_PATHS[@]} -gt 0 ]; then
-			echo "warn: machine '$NAME' already exists — ad-hoc --skill/--extension mounts only apply at create time;" >&2
+		if [ ${#SKILL_PATHS[@]} -gt 0 ] || [ ${#EXT_PATHS[@]} -gt 0 ] || [ ${#CONFIG_PATHS[@]} -gt 0 ]; then
+			echo "warn: machine '$NAME' already exists — ad-hoc --skill/--extension/--config mounts only apply at create time;" >&2
 			echo "      delete it first: smolvm machine delete --name $NAME" >&2
 		fi
 	else

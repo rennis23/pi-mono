@@ -27,3 +27,6 @@ github.com
 api.github.com
 raw.githubusercontent.com
 objects.githubusercontent.com
+
+# Langfuse
+cloud.langfuse.com
