@@ -29,6 +29,7 @@ help: ## Show this help
 	@echo "Pass-through arguments to run-agent.sh:"
 	@echo "  make pi ARGS='--persistent --name mybox -- --pi-arg value'"
 	@echo "  make pi SKILLS='/path/to/skill' EXTS='/path/to/ext'"
+	@echo "  make pi CONFIGS='~/.pi/agent/pi-langfuse:pi-langfuse'"
 	@echo
 	@echo "Use PI_ARGS for arbitrary run-agent.sh flags:"
 	@echo "  make PI_ARGS='--workspace /other/proj --allowlist offline' pi"
@@ -45,9 +46,10 @@ build: ## Build the pi-agent VM image (podman/docker → images/pi-agent.tar)
 
 # ── Ephemeral VM targets ─────────────────────────────────────────────────────
 
-# Build shared flags: workspace dir, skill/extension mounts
+# Build shared flags: workspace dir, skill/extension/config mounts
 ADHOC_ARGS := $(if $(SKILLS),$(foreach s,$(SKILLS),--skill $(s))) \
-              $(if $(EXTS),$(foreach e,$(EXTS),--extension $(e)))
+              $(if $(EXTS),$(foreach e,$(EXTS),--extension $(e))) \
+              $(if $(CONFIGS),$(foreach c,$(CONFIGS),--config $(c)))
 
 pi: ## Launch pi in ephemeral VM (default: cwd=workspace, default allowlist)
 	$(SCRIPTS_DIR)/run-agent.sh $(PI_ARGS) $(ADHOC_ARGS) -- $(ARGS)

@@ -25,8 +25,16 @@ RUN addgroup -g 501 agent \
 USER agent
 WORKDIR /workspace
 
-# Pre-cache pi-subagents so first startup doesn't re-download.
-# Also declared in sandbox/pi-global/settings.json (packages key).
-RUN pi install npm:pi-subagents
+# Pre-cache the extensions listed in sandbox/pi-global/settings.json (packages key).
+# This file is also mounted at runtime as the guest pi settings, so the build-time
+# install list and runtime load list are always the same.
+COPY pi-global/settings.json /tmp/pi-settings.json
+RUN node -e ' \
+	const { execFileSync } = require("child_process"); \
+	const settings = require("/tmp/pi-settings.json"); \
+	for (const pkg of settings.packages || []) { \
+		execFileSync("pi", ["install", pkg], { stdio: "inherit" }); \
+	} \
+'
 
 ENTRYPOINT ["pi"]

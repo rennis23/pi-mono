@@ -42,6 +42,7 @@ run-agent.sh [--workspace DIR] [--allowlist NAME] [--persistent [--name NAME]]
 | `--shell` | open `bash` in the VM instead of launching pi |
 | `--skill PATH` | mount a host skill file or skills directory read-only and load it (repeatable) |
 | `--extension PATH` | mount a host extension file/dir read-only and load it (repeatable) |
+| `--config PATH:NAME` | mount a host config directory read-write into `~/.pi/agent/NAME/` (repeatable) |
 | `--no-global-skills` | skip the always-on `sandbox/skills` mount |
 | `--no-global-extensions` | skip the always-on `sandbox/extensions` mount |
 
@@ -98,6 +99,13 @@ Skip these mounts per-run with `--no-global-skills` / `--no-global-extensions`.
   ```bash
   run-agent.sh --skill ~/.agents/skills \
                --extension ./packages/pi-hello/index.ts
+  ```
+
+  For extensions that keep credentials under `~/.pi/agent/<name>/`, mount the
+  host config directory read-write so state persists across VM runs:
+
+  ```bash
+  run-agent.sh --config ~/.pi/agent/pi-langfuse:pi-langfuse
   ```
 
   In `--persistent` mode these mounts are applied when the machine is
