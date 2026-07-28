@@ -54,6 +54,14 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+case "$ALLOWLIST" in
+	*/*|*..*) echo "error: invalid allowlist name (path traversal not allowed)" >&2; exit 1 ;;
+esac
+
+case "$NAME" in
+	*/*|*..*|-*) echo "error: invalid machine name (slashes, '..', or leading dashes not allowed)" >&2; exit 1 ;;
+esac
+
 ALLOWLIST_FILE="${SANDBOX_DIR}/allowlists/${ALLOWLIST}.txt"
 [ -f "$ALLOWLIST_FILE" ] || { echo "error: no allowlist '${ALLOWLIST}' (${ALLOWLIST_FILE})" >&2; exit 1; }
 [ -f "${SANDBOX_DIR}/images/pi-agent.tar" ] || {
@@ -165,6 +173,9 @@ for p in ${EXT_PATHS[@]+"${EXT_PATHS[@]}"}; do mount_adhoc_path "$p" extensions 
 # $1 = host path, $2 = guest name under ~/.pi/agent/.
 mount_config_dir() {
 	local p="$1" name="$2"
+	case "$name" in
+		*/*|*..*) echo "error: invalid config name '$name' (path traversal not allowed)" >&2; exit 1 ;;
+	esac
 	p="$(cd "$(dirname "$p")" && pwd)/$(basename "$p")"
 	[ -d "$p" ] || { echo "error: --config path must be a directory: $p" >&2; exit 1; }
 	VOL_ARGS+=(-v "$p:/home/agent/.pi/agent/$name:rw")
