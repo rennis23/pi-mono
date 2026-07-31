@@ -49,4 +49,15 @@ describe("pi-hello", () => {
 
 		expect(notify).toHaveBeenCalledWith("Hello, pi!", "info");
 	});
+
+	it("notifies with an error if the argument is too long", async () => {
+		const { pi, ctx, notify, captured } = setupMock();
+
+		helloExtension(pi);
+		const def = captured.get("hello");
+		expect(def).toBeDefined();
+		await def!.handler("a".repeat(101), ctx);
+
+		expect(notify).toHaveBeenCalledWith("Input is too long", "error");
+	});
 });
