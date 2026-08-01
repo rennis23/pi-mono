@@ -39,7 +39,14 @@ usage() { sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0; }
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--workspace)  WORKSPACE="$2"; shift 2 ;;
-		--allowlist)  ALLOWLIST="$2"; shift 2 ;;
+		--allowlist)
+			ALLOWLIST="$2"
+			if [[ "$ALLOWLIST" == */* ]] || [[ "$ALLOWLIST" == *..* ]]; then
+				echo "error: invalid allowlist name: $ALLOWLIST" >&2
+				exit 1
+			fi
+			shift 2
+			;;
 		--persistent) PERSISTENT=1; shift ;;
 		--name)       NAME="$2"; shift 2 ;;
 		--shell)      SHELL=1; shift ;;
@@ -165,6 +172,10 @@ for p in ${EXT_PATHS[@]+"${EXT_PATHS[@]}"}; do mount_adhoc_path "$p" extensions 
 # $1 = host path, $2 = guest name under ~/.pi/agent/.
 mount_config_dir() {
 	local p="$1" name="$2"
+	if [[ "$name" == */* ]] || [[ "$name" == *..* ]]; then
+		echo "error: invalid config name: $name" >&2
+		exit 1
+	fi
 	p="$(cd "$(dirname "$p")" && pwd)/$(basename "$p")"
 	[ -d "$p" ] || { echo "error: --config path must be a directory: $p" >&2; exit 1; }
 	VOL_ARGS+=(-v "$p:/home/agent/.pi/agent/$name:rw")
