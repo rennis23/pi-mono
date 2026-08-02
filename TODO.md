@@ -2,6 +2,20 @@
 
 Follow-ups from PR #1 review (https://github.com/rennis23/pi-mono/pull/1).
 
+## Lima sandbox: restore egress filtering (deferred)
+
+The lima-based sandbox (`sandbox/`) launched with full guest network access
+(migration decision: option D). smolvm previously enforced default-deny egress
+with DNS-filtered `--allow-host` lists from `sandbox/allowlists/*.txt`.
+
+- [ ] Implement option C (DNS filtering + in-guest nftables):
+  - provision a filtering resolver in the guest (CoreDNS/dnsmasq) that only
+    resolves allowlisted hostnames from `allowlists/*.txt`
+  - add nftables egress rules restricting outbound to resolved allowlist IPs;
+    re-resolve periodically (CDN IP rotation)
+  - ensure the agent user has no passwordless sudo so rules hold
+  - keep the `offline` preset working (block-all, `PI_OFFLINE=1`)
+
 ## Should fix
 
 - [ ] `scripts/release.mjs`: `stageChangedFiles()` stages untracked files (`git ls-files -o`), which could silently commit stray local files during a release. Limit to `git ls-files -m -d` or stage only known paths (`packages/*/package.json`, `packages/*/CHANGELOG.md`).
