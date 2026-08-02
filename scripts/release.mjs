@@ -73,7 +73,7 @@ function shellQuote(value) {
 }
 
 function stageChangedFiles() {
-	const output = run("git ls-files -m -o -d --exclude-standard", { silent: true });
+	const output = run("git ls-files -m -d --exclude-standard", { silent: true });
 	const paths = [
 		...new Set(
 			(output || "")
