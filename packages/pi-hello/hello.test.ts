@@ -49,4 +49,18 @@ describe("pi-hello", () => {
 
 		expect(notify).toHaveBeenCalledWith("Hello, pi!", "info");
 	});
+
+	it("rejects input exceeding 50 characters", async () => {
+		const { pi, ctx, notify, captured } = setupMock();
+
+		helloExtension(pi);
+		const def = captured.get("hello");
+		expect(def).toBeDefined();
+
+		const longInput = "a".repeat(51);
+		await def!.handler(longInput, ctx);
+
+		expect(notify).toHaveBeenCalledWith("Input exceeds maximum length of 50 characters", "error");
+		expect(notify).toHaveBeenCalledTimes(1);
+	});
 });
