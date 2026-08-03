@@ -60,9 +60,12 @@ launch.sh [--workspace DIR] [--allowlist NAME] [--name NAME] [--fresh]
 | `--no-global-extensions` | skip the always-on `sandbox/extensions` mount (create time only) |
 
 `make` wrappers (`sandbox/Makefile`): `doctor`, `pi`, `pi-offline`, `pi-fresh`,
-`shell`, `stop`, `delete`, `clean`. Pass-through: `make pi SKILLS=/path EXTS=/path
-CONFIGS='~/.pi/agent/pi-langfuse:pi-langfuse' ARGS='--pi-flag'`, or arbitrary
-launch.sh flags via `PI_ARGS`.
+`shell`, `stop`, `delete`, `clean`. Pass-through: `make NAME=mybox pi
+SKILLS=/path EXTS=/path CONFIGS='~/.pi/agent/pi-langfuse:pi-langfuse'
+ARGS='--pi-flag'`, or arbitrary launch.sh flags via `PI_ARGS`. The `NAME`
+variable is used for launch and lifecycle targets; an explicit `--name` in
+`PI_ARGS` appears later and overrides it. When overriding the name, use the
+same name with `NAME` for subsequent `stop`/`delete` commands.
 
 ## Persistent instance lifecycle
 
@@ -129,8 +132,10 @@ Skip these mounts at create time with `--no-global-skills` / `--no-global-extens
   prompt, thanks to the guest settings above).
 - *Ad hoc at create* — repeatable flags. Directories are mounted read-only under
   `/opt/adhoc/...` (live view of the host); single files cannot be mounted
-  (virtiofs limitation) and are staged (copied) instead, so host edits to a
-  single file mid-run are not reflected in the guest:
+  (virtiofs limitation) and are staged (copied) under
+  `$LIMA_HOME/<instance>/adhoc-files/`, so the mounted paths survive launcher
+  exits and VM restarts. Host edits to a single file after creation are not
+  reflected until `--fresh` (or another instance name):
 
   ```bash
   launch.sh --fresh --skill ~/.agents/skills \
@@ -148,11 +153,12 @@ Skip these mounts at create time with `--no-global-skills` / `--no-global-extens
 ## Offline mode
 
 `launch.sh --allowlist offline` flips the instance's `OFFLINE` param and restarts
-it; a boot script then applies an idempotent nftables block-all egress rule
-(loopback and host-initiated SSH exempt — `limactl shell` keeps working).
+it; a boot script then reconciles an nftables block-all egress rule (loopback
+and host-initiated SSH exempt — `limactl shell` keeps working). Online launches
+remove that table, so switching modes repeatedly converges correctly.
 `PI_OFFLINE=1` is set in the session so pi skips model-catalog network access
-entirely. Launching without `offline` flips the instance back. Instances are
-always *created* online — provisioning needs network — and flipped afterwards.
+entirely. Instances are always *created* online — provisioning needs network —
+and flipped afterwards.
 
 The `allowlists/*.txt` files are retained for the upcoming egress-filtering work
 (`TODO.md`) but are not read by `launch.sh`.

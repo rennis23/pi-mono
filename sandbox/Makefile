@@ -30,8 +30,8 @@ help: ## Show this help
 	@echo "  make pi SKILLS='/path/to/skill' EXTS='/path/to/ext'"
 	@echo "  make pi CONFIGS='~/.pi/agent/pi-langfuse:pi-langfuse'"
 	@echo
-	@echo "Use PI_ARGS for arbitrary launch.sh flags:"
-	@echo "  make PI_ARGS='--workspace /other/proj --name mybox' pi"
+	@echo "Use PI_ARGS for arbitrary launch.sh flags (explicit --name overrides NAME):"
+	@echo "  make NAME=mybox PI_ARGS='--workspace /other/proj' pi"
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 
@@ -46,28 +46,28 @@ ADHOC_ARGS := $(if $(SKILLS),$(foreach s,$(SKILLS),--skill $(s))) \
               $(if $(CONFIGS),$(foreach c,$(CONFIGS),--config $(c)))
 
 pi: ## Launch pi in the persistent VM (default: cwd=workspace)
-	$(SCRIPTS_DIR)/launch.sh $(PI_ARGS) $(ADHOC_ARGS) -- $(ARGS)
+	$(SCRIPTS_DIR)/launch.sh --name "$(NAME)" $(PI_ARGS) $(ADHOC_ARGS) -- $(ARGS)
 
 pi-offline: ## Launch pi in the VM with no network
-	$(SCRIPTS_DIR)/launch.sh $(PI_ARGS) $(ADHOC_ARGS) --allowlist offline -- $(ARGS)
+	$(SCRIPTS_DIR)/launch.sh --name "$(NAME)" $(PI_ARGS) $(ADHOC_ARGS) --allowlist offline -- $(ARGS)
 
 pi-fresh: ## Wipe + recreate the instance, then launch pi
-	$(SCRIPTS_DIR)/launch.sh $(PI_ARGS) $(ADHOC_ARGS) --fresh -- $(ARGS)
+	$(SCRIPTS_DIR)/launch.sh --name "$(NAME)" $(PI_ARGS) $(ADHOC_ARGS) --fresh -- $(ARGS)
 
 shell: ## Open bash shell in the VM
-	$(SCRIPTS_DIR)/launch.sh $(PI_ARGS) --shell $(ADHOC_ARGS)
+	$(SCRIPTS_DIR)/launch.sh --name "$(NAME)" $(PI_ARGS) --shell $(ADHOC_ARGS)
 
 stop: ## Stop the instance
-	@if limactl list --format '{{.Name}}' | grep -qx $(NAME); then \
-		limactl stop $(NAME); \
+	@if limactl list --format '{{.Name}}' | grep -Fqx -- '$(NAME)'; then \
+		limactl stop '$(NAME)'; \
 	else \
 		echo "No instance '$(NAME)' found."; \
 	fi
 
 delete: ## Delete the instance (wipes the disk; re-created on next launch)
-	@if limactl list --format '{{.Name}}' | grep -qx $(NAME); then \
-		limactl stop $(NAME) 2>/dev/null || true; \
-		limactl delete $(NAME); \
+	@if limactl list --format '{{.Name}}' | grep -Fqx -- '$(NAME)'; then \
+		limactl stop '$(NAME)' 2>/dev/null || true; \
+		limactl delete '$(NAME)'; \
 	else \
 		echo "No instance '$(NAME)' found."; \
 	fi

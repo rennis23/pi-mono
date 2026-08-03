@@ -115,11 +115,17 @@ start_instance() { # $* = extra limactl start flags
 
 # ── --fresh: wipe and recreate ────────────────────────────────────────────────
 STATUS="$(instance_status)"
-if [ "$FRESH" -eq 1 ] && [ -n "$STATUS" ]; then
-	echo "== --fresh: deleting instance '${NAME}' =="
-	stop_instance
-	limactl delete "$NAME"
-	STATUS=""
+STAGING_ROOT="${LIMA_HOME_DIR}/${NAME}/adhoc-files"
+if [ "$FRESH" -eq 1 ]; then
+	if [ -n "$STATUS" ]; then
+		echo "== --fresh: deleting instance '${NAME}' =="
+		stop_instance
+		limactl delete "$NAME"
+		STATUS=""
+	fi
+	# Staged files are part of the instance's create-time configuration. A
+	# fresh instance must not retain paths from the deleted configuration.
+	rm -rf "$STAGING_ROOT"
 fi
 
 if [ -z "$STATUS" ]; then
@@ -150,13 +156,24 @@ if [ -z "$STATUS" ]; then
 
 	# Ad-hoc skills/extensions: directories are mounted read-only under
 	# /opt/adhoc (live view of the host) and passed to pi via --skill / -e.
-	# virtiofs cannot mount single files, so those are staged (copied) into a
-	# temp dir — host edits to single files during a run are NOT reflected.
+	# virtiofs cannot mount single files, so those are copied into the
+	# persistent per-instance staging root. Host edits to single files after
+	# creation are NOT reflected until --fresh (or another instance name).
 	PI_EXTRA_ARGS=()
-	STAGING_DIRS=()
-	cleanup() { [ ${#STAGING_DIRS[@]} -eq 0 ] || rm -rf "${STAGING_DIRS[@]}"; }
-	trap cleanup EXIT
 	STAGED=0
+	mkdir -p "$STAGING_ROOT" || {
+		echo "error: cannot create ad-hoc staging root: $STAGING_ROOT" >&2
+		exit 1
+	}
+	# If limactl create fails, this root is not associated with a usable
+	# instance. Remove it so a later launch starts from a clean configuration.
+	CREATE_FAILED=1
+	cleanup_failed_create() {
+		if [ "$CREATE_FAILED" -eq 1 ]; then
+			rm -rf "$STAGING_ROOT"
+		fi
+	}
+	trap cleanup_failed_create EXIT
 
 	# $1 = host path, $2 = dest subdir (e.g. skills), $3 = pi flag (e.g. --skill)
 	add_adhoc_mount() {
@@ -168,9 +185,15 @@ if [ -z "$STATUS" ]; then
 			add_mount "$p" "$dest" false
 		else
 			STAGED=$((STAGED+1))
-			local stage="$(mktemp -d "${TMPDIR:-/tmp}/pi-sandbox.XXXXXX")"
-			STAGING_DIRS+=("$stage")
-			cp "$p" "$stage/"
+			local stage="$STAGING_ROOT/$STAGED"
+			mkdir -p "$stage" || {
+				echo "error: cannot create ad-hoc staging path: $stage" >&2
+				exit 1
+			}
+			cp "$p" "$stage/" || {
+				echo "error: cannot stage file: $p" >&2
+				exit 1
+			}
 			add_mount "$stage" "/opt/adhoc/files/$STAGED" false
 			dest="/opt/adhoc/files/$STAGED/$(basename "$p")"
 		fi
@@ -199,6 +222,8 @@ if [ -z "$STATUS" ]; then
 	limactl create --name="$NAME" --tty=false \
 		--set ".mounts = [${MOUNTS%, }]" \
 		"$CONFIG"
+	CREATE_FAILED=0
+	trap - EXIT
 	start_instance
 else
 	# ── Existing-instance guards ─────────────────────────────────────────────
