@@ -97,14 +97,17 @@ provision:
   - mode: boot
     script: |
       #!/bin/sh
+      command -v nft >/dev/null 2>&1 || { echo "boot: nft not installed yet; skipping firewall reconciliation" >&2; exit 0; }
+      # Remove first so both repeated offline boots and offline/online
+      # transitions converge without duplicate-table errors. An absent table
+      # is expected during the first online boot and must not fail startup.
+      nft delete table inet pi_offline 2>/dev/null || true
       if [ "{{.Param.OFFLINE}}" = "true" ]; then
-        command -v nft >/dev/null 2>&1 || { echo "boot: nft not installed yet; skipping offline rules" >&2; exit 0; }
         # Idempotent block-all egress. Loopback is exempt; established/related
         # flows are exempt so host-initiated SSH (limactl shell/shell-forwarded
         # ports) keeps working — the guest can no longer *initiate* anything
         # (no DNS, no TCP/UDP out).
         nft -f - <<'NFT'
-      destroy table inet pi_offline
       table inet pi_offline {
         chain output {
           type filter hook output priority 0; policy drop;
