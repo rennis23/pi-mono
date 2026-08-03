@@ -13,8 +13,10 @@ with DNS-filtered `--allow-host` lists from `sandbox/allowlists/*.txt`.
     resolves allowlisted hostnames from `allowlists/*.txt`
   - add nftables egress rules restricting outbound to resolved allowlist IPs;
     re-resolve periodically (CDN IP rotation)
-  - ensure the agent user has no passwordless sudo so rules hold
-  - keep the `offline` preset working (block-all, `PI_OFFLINE=1`)
+  - [x] ensure the agent user has no passwordless sudo so rules hold (done in
+    the lima migration: grant removed at provision time)
+  - [x] keep the `offline` preset working (block-all, `PI_OFFLINE=1`) — done in
+    the lima migration (OFFLINE param + boot nftables); option C must not break it
 
 ## Should fix
 

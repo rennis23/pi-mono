@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Preflight checks for the pi-agent smolvm sandbox.
+# Preflight checks for the pi-agent lima sandbox.
 set -euo pipefail
 
 fail=0
@@ -14,25 +14,30 @@ else
 	bad "requires macOS on Apple Silicon (got $(uname -s) $(uname -m))"
 fi
 
-echo "== smolvm =="
-if command -v smolvm >/dev/null 2>&1; then
-	ok "smolvm $(smolvm --version 2>/dev/null || echo '(version unknown)') at $(command -v smolvm)"
+MACOS_MAJOR="$(sw_vers -productVersion | cut -d. -f1)"
+if [ "$MACOS_MAJOR" -ge 13 ] 2>/dev/null; then
+	ok "macOS >= 13 (vz + virtiofs)"
 else
-	bad "smolvm not found — run sandbox/scripts/install-smolvm.sh"
+	bad "macOS >= 13 required for vmType vz with virtiofs mounts (got $(sw_vers -productVersion))"
 fi
 
-echo "== image builder =="
-if command -v podman >/dev/null 2>&1; then
-	ok "podman at $(command -v podman)"
-	if podman info >/dev/null 2>&1; then
-		ok "podman machine running"
+echo "== lima =="
+if command -v limactl >/dev/null 2>&1; then
+	LIMA_VERSION="$(limactl --version 2>/dev/null | awk '{print $3}')"
+	LIMA_MAJOR="${LIMA_VERSION%%.*}"
+	if [ "${LIMA_MAJOR:-0}" -ge 2 ] 2>/dev/null; then
+		ok "limactl $LIMA_VERSION at $(command -v limactl)"
 	else
-		warn "podman installed but machine not running — 'podman machine start'"
+		bad "limactl >= 2.0 required (shellenv/param support), got '$LIMA_VERSION' — brew upgrade lima"
 	fi
-elif command -v docker >/dev/null 2>&1; then
-	ok "docker at $(command -v docker)"
 else
-	bad "neither podman nor docker found — needed to build the agent image"
+	bad "limactl not found — brew install lima"
+fi
+
+if limactl template yq template:_images/alpine-3.23 '.images[].location' >/dev/null 2>&1; then
+	ok "template:_images/alpine-3.23 resolvable"
+else
+	bad "template:_images/alpine-3.23 not resolvable — agent.lima.yaml bases on it (ships with lima)"
 fi
 
 echo "== ssh agent =="
@@ -44,7 +49,7 @@ if [ -n "${SSH_AUTH_SOCK:-}" ]; then
 		warn "agent has no identities — git over SSH in the VM will fail (ssh-add your key)"
 	fi
 else
-	bad "SSH_AUTH_SOCK not set — --ssh-agent forwarding will fail"
+	bad "SSH_AUTH_SOCK not set — ssh agent forwarding will fail"
 fi
 
 echo "== secrets =="

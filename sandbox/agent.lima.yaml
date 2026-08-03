@@ -1,0 +1,118 @@
+# pi-agent sandbox — lima instance config.
+# Used by scripts/launch.sh via `limactl create --name=... agent.lima.yaml`;
+# mounts are injected at create time with `--set '.mounts = [...]'`.
+#
+# NOTE on `base`: we embed only lima's `_images/alpine-3.23` partial template,
+# not the full `template:alpine-3.23`. The full template includes
+# `_default/mounts`, which mounts the host home directory into the guest —
+# a sandbox violation. Lima *combines* base-template slices (mounts, provision)
+# with the instance's own (there is no override), so the only way to keep the
+# host home out of the guest is to skip that template layer.
+minimumLimaVersion: 2.0.0
+base: template:_images/alpine-3.23
+
+vmType: vz
+cpus: 2
+memory: 2GiB
+disk: 10GiB
+
+# The built-in containerd installer does not support Alpine, and the sandbox
+# does not need containerd (matches the stock alpine-3.23 template).
+containerd:
+  system: false
+  user: false
+
+ssh:
+  forwardAgent: true   # host SSH agent; private keys never enter the VM
+
+# NOTE: `user.passwordlessSudo: false` would be preferable but lima restricts
+# it to `plain: true` instances (no mounts). The system provision below
+# strips the sudo grant instead (parity with smolvm's unprivileged agent user;
+# also a prerequisite for the TODO option-C egress rules to hold).
+
+param:
+  OFFLINE: "false"     # flipped per-run by launch.sh via `limactl start --set`
+
+provision:
+  # root, once at create — replaces the old images/Dockerfile.agent
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eu
+      apk add --no-cache bash bat ca-certificates curl fd git github-cli \
+        openssh-client ripgrep nodejs npm nftables
+      # pi needs Node >= 22; Alpine 3.23 apk provides it. Fail loudly if an
+      # Alpine bump ever regresses this (fallback would be the official tarball).
+      [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 22 ] || {
+        echo "provision: nodejs from apk is older than 22" >&2
+        exit 1
+      }
+      npm install -g @earendil-works/pi-coding-agent
+      # --config mounts target ~/.pi/agent/<name>; lima creates mount-point
+      # parents as root, which would make the pi home unwritable for the agent
+      # user (auth.json, sessions, ...). Reclaim it here.
+      mkdir -p "{{.Home}}/.pi/agent"
+      chown {{.UID}}:{{.UID}} "{{.Home}}/.pi" "{{.Home}}/.pi/agent" 2>/dev/null || true
+      mkdir -p /workspace
+      # /workspace is normally a virtiofs mount owned by the host uid (= the
+      # lima user's uid), so it is already writable; the chown only covers the
+      # no-mount case and may fail on a virtiofs root — best effort.
+      chown {{.UID}}:{{.UID}} /workspace 2>/dev/null || true
+      # Drop the passwordless-sudo grant created for the default user, and the
+      # generated sudo password file if one exists (it is readable by the
+      # agent user if left behind).
+      rm -f /etc/sudoers.d/90-cloud-init-users /etc/sudoers.d/lima
+      rm -f {{.Home}}/password
+
+  # default user, once — pi home wiring + extension pre-cache
+  - mode: user
+    script: |
+      #!/bin/sh
+      set -eu
+      mkdir -p ~/.pi/agent
+      # Curated globals are mounted read-only under /opt by launch.sh (mounts
+      # under the pi home itself would leave its parents root-owned). When a
+      # mount is skipped (--no-global-*) the link dangles, which pi treats like
+      # a missing directory.
+      ln -sfn /opt/pi-skills ~/.pi/agent/skills
+      ln -sfn /opt/pi-extensions ~/.pi/agent/extensions
+      ln -sfn /opt/pi-global/settings.json ~/.pi/agent/settings.json
+      # Pre-cache packages[] from settings.json (same as the old Dockerfile
+      # step). Best effort: pi installs missing packages on first run anyway.
+      if [ -f /opt/pi-global/settings.json ]; then
+        node -e '
+          const { execFileSync } = require("child_process");
+          const settings = require("/opt/pi-global/settings.json");
+          for (const pkg of settings.packages || []) {
+            try { execFileSync("pi", ["install", pkg], { stdio: "inherit" }); }
+            catch { console.warn("warn: pi install failed for " + pkg); }
+          }
+        '
+      fi
+
+  # root, every boot — offline preset. Rendered from the OFFLINE param each
+  # start; launch.sh flips the param via `limactl start --set` + restart.
+  # nft is only available after the system provision above, so instances must
+  # be created online (launch.sh guarantees this) before going offline.
+  - mode: boot
+    script: |
+      #!/bin/sh
+      if [ "{{.Param.OFFLINE}}" = "true" ]; then
+        command -v nft >/dev/null 2>&1 || { echo "boot: nft not installed yet; skipping offline rules" >&2; exit 0; }
+        # Idempotent block-all egress. Loopback is exempt; established/related
+        # flows are exempt so host-initiated SSH (limactl shell/shell-forwarded
+        # ports) keeps working — the guest can no longer *initiate* anything
+        # (no DNS, no TCP/UDP out).
+        nft -f - <<'NFT'
+      destroy table inet pi_offline
+      table inet pi_offline {
+        chain output {
+          type filter hook output priority 0; policy drop;
+          oifname "lo" accept
+          ct state established,related accept
+        }
+      }
+      NFT
+      fi
+
+mounts: []   # injected at create time by launch.sh via --set
