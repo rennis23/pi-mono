@@ -1,3 +1,3 @@
 # Offline mode — intentionally empty.
-# When this list is selected, run-agent.sh omits --net entirely: no outbound
-# networking and no DNS resolution inside the VM.
+# When this list is selected, launch.sh flips the instance's OFFLINE param:
+# block-all nftables egress inside the VM (no outbound networking, no DNS).

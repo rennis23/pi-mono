@@ -1,5 +1,7 @@
 # Egress allowlist for the pi-agent sandbox (one hostname per line, # = comment)
-# Consumed by run-agent.sh → --allow-host flags (implies --net + DNS filtering)
+# Reserved for the option-C egress work (DNS filtering + in-guest nftables,
+# see TODO.md). launch.sh does not read these files yet — only the "offline"
+# preset has an effect today.
 
 # pi.dev — model catalogs, version checks (pi fetches /api/models/providers/<id>
 # for every configured provider; without this, /model shows "Could not refresh N

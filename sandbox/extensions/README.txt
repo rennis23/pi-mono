@@ -19,4 +19,5 @@ here. Note the mount is read-only: `/reload` can re-read edits made on the
 host between runs, but the guest cannot modify these files.
 
 Skip the mount at instance creation with `launch.sh --no-global-extensions`.
-For ad-hoc, per-run extensions use `launch.sh --extension <host-path>`.
+For ad-hoc extensions use `launch.sh --extension <host-path>` (create-time only;
+use `--fresh` or another `--name` to change them).
