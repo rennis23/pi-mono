@@ -1,0 +1,4 @@
+## 2026-08-04 - [CRITICAL] Prevent vulnerabilities in extension templates
+**Vulnerability:** The example extension (`packages/pi-hello/index.ts`) contained a Cross-Site Scripting (XSS) and Denial of Service (DoS) vulnerability due to unbounded, unsanitized user input passed directly to the UI notification handler.
+**Learning:** Example or template code acts as a blueprint for all future development. Missing security controls in boilerplate code will propagate to all extensions created from that template, turning a single oversight into a widespread systemic vulnerability.
+**Prevention:** All example, template, and boilerplate code must adhere to the highest security standards, including strict input validation, sanitization (e.g., `escapeHtml`), and constraints (e.g., length limits). Treat example code as production code.

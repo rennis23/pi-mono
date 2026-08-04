@@ -49,4 +49,29 @@ describe("pi-hello", () => {
 
 		expect(notify).toHaveBeenCalledWith("Hello, pi!", "info");
 	});
+
+	it("escapes HTML characters in the provided argument to prevent XSS", async () => {
+		const { pi, ctx, notify, captured } = setupMock();
+
+		helloExtension(pi);
+		const def = captured.get("hello");
+		expect(def).toBeDefined();
+		await def!.handler('<script>alert("xss")</script>', ctx);
+
+		expect(notify).toHaveBeenCalledWith("Hello, &lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;!", "info");
+	});
+
+	it("truncates the provided argument to 100 characters to prevent UI DoS", async () => {
+		const { pi, ctx, notify, captured } = setupMock();
+
+		helloExtension(pi);
+		const def = captured.get("hello");
+		expect(def).toBeDefined();
+
+		const longInput = "a".repeat(150);
+		await def!.handler(longInput, ctx);
+
+		const expectedOutput = `${"a".repeat(100)}...`;
+		expect(notify).toHaveBeenCalledWith(`Hello, ${expectedOutput}!`, "info");
+	});
 });
