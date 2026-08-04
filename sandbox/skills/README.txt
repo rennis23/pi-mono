@@ -15,4 +15,5 @@ This is a **curated, reviewed** copy — intentionally not a symlink to your
 host `~/.pi/agent/skills`, so the VM only sees what you explicitly place here.
 
 Skip the mount at instance creation with `launch.sh --no-global-skills`.
-For ad-hoc, per-run skills use `launch.sh --skill <host-path>`.
+For ad-hoc skills use `launch.sh --skill <host-path>` (create-time only;
+use `--fresh` or another `--name` to change them).
