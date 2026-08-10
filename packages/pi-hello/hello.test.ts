@@ -49,4 +49,19 @@ describe("pi-hello", () => {
 
 		expect(notify).toHaveBeenCalledWith("Hello, pi!", "info");
 	});
+
+	it("sanitizes HTML characters in the provided argument to prevent XSS", async () => {
+		const { pi, ctx, notify, captured } = setupMock();
+
+		helloExtension(pi);
+		const def = captured.get("hello");
+		expect(def).toBeDefined();
+
+		const maliciousPayload = "<script>alert('xss')</script>";
+		const expectedSanitized = "&lt;script&gt;alert(&#039;xss&#039;)&lt;/script&gt;";
+
+		await def!.handler(maliciousPayload, ctx);
+
+		expect(notify).toHaveBeenCalledWith(`Hello, ${expectedSanitized}!`, "info");
+	});
 });
