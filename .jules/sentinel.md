@@ -1,0 +1,4 @@
+## 2026-08-15 - [XSS in UI Notification]
+**Vulnerability:** Cross-Site Scripting (XSS) vulnerability via unsanitized user input passed to `ctx.ui.notify` when developing extensions using `@earendil-works/pi-coding-agent`.
+**Learning:** Any user input passed to the UI APIs, such as `ctx.ui.notify` in `pi-coding-agent` extensions, will render without escaping by default. This requires manual sanitization of all inputs passed to UI functions.
+**Prevention:** Implement HTML escaping for any variable before passing it to UI rendering functions in the extension layer. Use helper functions like `escapeHtml` to consistently strip potentially malicious characters before display.
