@@ -116,16 +116,34 @@ start_instance() { # $* = extra limactl start flags
 # ── --fresh: wipe and recreate ────────────────────────────────────────────────
 STATUS="$(instance_status)"
 STAGING_ROOT="${LIMA_HOME_DIR}/${NAME}/adhoc-files"
+
+# Secondary broken-instance detection: lima reports "Broken" when lima.yaml is
+# missing/unreadable, but verify defensively — if the instance dir exists but
+# its lima.yaml cannot be read, treat it as broken regardless of reported status.
+if [ -d "${LIMA_HOME_DIR}/${NAME}" ] && [ ! -r "$(instance_file)" ]; then
+	STATUS="Broken"
+fi
 if [ "$FRESH" -eq 1 ]; then
 	if [ -n "$STATUS" ]; then
 		echo "== --fresh: deleting instance '${NAME}' =="
 		stop_instance
-		limactl delete "$NAME"
+		if [ "$STATUS" = "Broken" ]; then
+			# limactl delete refuses broken instances; the dir is safe to remove
+			rm -rf "${LIMA_HOME_DIR}/${NAME}"
+		else
+			limactl delete "$NAME"
+		fi
 		STATUS=""
 	fi
 	# Staged files are part of the instance's create-time configuration. A
 	# fresh instance must not retain paths from the deleted configuration.
 	rm -rf "$STAGING_ROOT"
+fi
+
+if [ "$STATUS" = "Broken" ]; then
+	echo "error: instance '${NAME}' is broken (${LIMA_HOME_DIR}/${NAME}/lima.yaml missing or unreadable)." >&2
+	echo "       if no limactl operation is using it, run 'rm -rf ${LIMA_HOME_DIR}/${NAME}' or use --fresh" >&2
+	exit 1
 fi
 
 if [ -z "$STATUS" ]; then
@@ -161,19 +179,14 @@ if [ -z "$STATUS" ]; then
 	# creation are NOT reflected until --fresh (or another instance name).
 	PI_EXTRA_ARGS=()
 	STAGED=0
-	mkdir -p "$STAGING_ROOT" || {
-		echo "error: cannot create ad-hoc staging root: $STAGING_ROOT" >&2
-		exit 1
-	}
-	# If limactl create fails, this root is not associated with a usable
-	# instance. Remove it so a later launch starts from a clean configuration.
-	CREATE_FAILED=1
-	cleanup_failed_create() {
-		if [ "$CREATE_FAILED" -eq 1 ]; then
-			rm -rf "$STAGING_ROOT"
-		fi
-	}
-	trap cleanup_failed_create EXIT
+	# IMPORTANT: do NOT create $STAGING_ROOT here. It lives inside the
+	# instance dir, and `limactl create` refuses to run when that dir already
+	# exists — even empty — so creating it first would make every first-time
+	# launch fail with "instance already exists". Staging is deferred until
+	# after create succeeds. Lima tolerates non-existent mount locations at
+	# create time (verified with lima 2.2.0).
+	PENDING_SRC=()
+	PENDING_STAGE=()
 
 	# $1 = host path, $2 = dest subdir (e.g. skills), $3 = pi flag (e.g. --skill)
 	add_adhoc_mount() {
@@ -186,14 +199,8 @@ if [ -z "$STATUS" ]; then
 		else
 			STAGED=$((STAGED+1))
 			local stage="$STAGING_ROOT/$STAGED"
-			mkdir -p "$stage" || {
-				echo "error: cannot create ad-hoc staging path: $stage" >&2
-				exit 1
-			}
-			cp "$p" "$stage/" || {
-				echo "error: cannot stage file: $p" >&2
-				exit 1
-			}
+			PENDING_SRC+=("$p")
+			PENDING_STAGE+=("$stage")
 			add_mount "$stage" "/opt/adhoc/files/$STAGED" false
 			dest="/opt/adhoc/files/$STAGED/$(basename "$p")"
 		fi
@@ -222,8 +229,37 @@ if [ -z "$STATUS" ]; then
 	limactl create --name="$NAME" --tty=false \
 		--set ".mounts = [${MOUNTS%, }]" \
 		"$CONFIG"
-	CREATE_FAILED=0
-	trap - EXIT
+
+	# Stage ad-hoc files now that the instance exists. If this fails, the new
+	# instance's mounts reference missing files — use --fresh to recreate.
+	if [ "${#PENDING_SRC[@]}" -gt 0 ]; then
+		# If staging fails partway, the instance's mounts reference missing
+		# files. Clean up the partial staging root so a later --fresh (or a
+		# fresh name) starts clean; mirrors the old create-time trap.
+		STAGE_FAILED=1
+		cleanup_failed_stage() {
+			if [ "$STAGE_FAILED" -eq 1 ]; then
+				rm -rf "$STAGING_ROOT"
+			fi
+		}
+		trap cleanup_failed_stage EXIT
+		mkdir -p "$STAGING_ROOT" || {
+			echo "error: cannot create ad-hoc staging root: $STAGING_ROOT" >&2
+			exit 1
+		}
+		for i in "${!PENDING_SRC[@]}"; do
+			mkdir -p "${PENDING_STAGE[$i]}" || {
+				echo "error: cannot create ad-hoc staging path: ${PENDING_STAGE[$i]} (use --fresh to recreate)" >&2
+				exit 1
+			}
+			cp "${PENDING_SRC[$i]}" "${PENDING_STAGE[$i]}/" || {
+				echo "error: cannot stage file: ${PENDING_SRC[$i]} (use --fresh to recreate)" >&2
+				exit 1
+			}
+		done
+		STAGE_FAILED=0
+		trap - EXIT
+	fi
 	start_instance
 else
 	# ── Existing-instance guards ─────────────────────────────────────────────
