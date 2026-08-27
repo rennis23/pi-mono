@@ -38,6 +38,10 @@
 		"@earendil-works/pi-coding-agent": ">=0.80.0"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-coding-agent": "^0.81.1"
+		"@earendil-works/pi-coding-agent": "^0.81.1",
+		"@types/html-escaper": "^3.0.4"
+	},
+	"dependencies": {
+		"html-escaper": "^2.0.2"
 	}
 }
