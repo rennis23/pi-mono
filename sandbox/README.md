@@ -34,7 +34,7 @@ run-agent.sh [--workspace DIR] [--allowlist NAME] [--persistent [--name NAME]]
 ```
 
 | Option | Description |
-|---|---|
+| --- | --- |
 | `--workspace DIR` | host dir mounted at `/workspace` (default: `$PWD`) |
 | `--allowlist NAME` | egress preset from `allowlists/NAME.txt` (default: `default`; `offline` = no network) |
 | `--persistent` | named machine; package installs survive across sessions |
@@ -88,6 +88,7 @@ microVM is the trust boundary, so the interactive trust prompt is skipped).
 Skip these mounts per-run with `--no-global-skills` / `--no-global-extensions`.
 
 **2. Scoped / ad hoc:**
+
 - *Per-directory* — a project mounted at `/workspace` that contains
   `.pi/skills/` or `.pi/extensions/` gets them auto-loaded only for that
   project (no trust prompt, thanks to the guest settings above).
@@ -98,7 +99,7 @@ Skip these mounts per-run with `--no-global-skills` / `--no-global-extensions`.
 
   ```bash
   run-agent.sh --skill ~/.agents/skills \
-               --extension ./packages/pi-hello/index.ts
+               --extension ./packages/mx-pi-context-stats/index.ts
   ```
 
   For extensions that keep credentials under `~/.pi/agent/<name>/`, mount the
