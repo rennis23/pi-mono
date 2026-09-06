@@ -49,4 +49,13 @@ describe("pi-hello", () => {
 
 		expect(notify).toHaveBeenCalledWith("Hello, pi!", "info");
 	});
+
+	it("escapes html characters in the target to prevent XSS", async () => {
+		const { pi, ctx, notify, captured } = setupMock();
+		helloExtension(pi);
+		const def = captured.get("hello");
+		expect(def).toBeDefined();
+		await def!.handler("<script>alert(1)</script>", ctx);
+		expect(notify).toHaveBeenCalledWith("Hello, &lt;script&gt;alert(1)&lt;/script&gt;!", "info");
+	});
 });
