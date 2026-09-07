@@ -24,7 +24,7 @@ arbitrary commands without risking the host filesystem, credentials, or network.
 ```
 pi-mono/
 ├── packages/
-│   ├── pi-hello/
+│   ├── mx-pi-context-stats/
 │   └── pi-sandbox/                  # (Phase 3) pi extension: in-session sandbox control
 ├── sandbox/                         # sandbox runtime assets (not an npm package)
 │   ├── README.md                    # setup & usage docs

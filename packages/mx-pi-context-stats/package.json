@@ -1,0 +1,51 @@
+{
+	"name": "@rennis23/mx-pi-context-stats",
+	"version": "0.1.0",
+	"description": "Pi extension. Per-prompt context, token, cost and subagent stats in a below-editor widget and a footer status line.",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"context",
+		"tokens",
+		"usage",
+		"cost",
+		"subagent"
+	],
+	"type": "module",
+	"license": "MIT",
+	"author": "rennis23",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/rennis23/pi-mono.git",
+		"directory": "packages/mx-pi-context-stats"
+	},
+	"homepage": "https://github.com/rennis23/pi-mono/tree/master/packages/mx-pi-context-stats#readme",
+	"bugs": {
+		"url": "https://github.com/rennis23/pi-mono/issues"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"test": "vitest run"
+	},
+	"files": [
+		"index.ts",
+		"src/**/*.ts",
+		"README.md",
+		"LICENSE"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.80.0",
+		"@earendil-works/pi-tui": ">=0.80.0"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "^0.81.1",
+		"@earendil-works/pi-tui": "^0.81.1"
+	}
+}

@@ -35,7 +35,7 @@ Always run `npm run check` and `npm test` before committing. The Husky pre-commi
 ```
 pi-mono/
 ├── packages/          # Workspace packages (each is a pi extension)
-│   └── pi-hello/      # Example extension
+│   └── mx-pi-context-stats/ # Context/token/cost stats widget
 ├── scripts/           # sync-versions.js, release.mjs
 ├── test/              # Shared test setup (setup.ts)
 ├── biome.json         # Shared formatter/linter config
@@ -59,8 +59,14 @@ Run `npm run check` to auto-fix formatting and lint issues (`biome check --write
 
 ### Package naming
 
-- Directory: `packages/pi-<name>/`
-- npm name: `@rennis23/pi-<name>`
+Every extension and skill in this repository uses the `mx-pi-` prefix. All
+user-visible names must begin with `mx-pi-`:
+
+- Directory: `packages/mx-pi-<name>/`
+- npm name: `@rennis23/mx-pi-<name>`
+- Registered commands and CLI flags: must start with `mx-pi-` (e.g. command
+  `/mx-pi-context-stats`, flags `--mx-pi-context-stats-rows`)
+- Skills (e.g. under `sandbox/skills/`): `mx-pi-<name>/SKILL.md`
 - Include `"pi": { "extensions": ["./index.ts"] }` in `package.json`
 
 ### Extension structure
