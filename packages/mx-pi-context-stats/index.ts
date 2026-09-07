@@ -43,6 +43,19 @@ const WIDGET_KEY = "mx-pi-context-stats";
 const USAGE =
 	"Usage: /mx-pi-settings [toggle|summary|rows <n>|subagent-rows <n>|subagents on|off|health on|off|placement above|below|reset]";
 
+/**
+ * Escapes HTML characters in a string to prevent XSS vulnerabilities when
+ * rendered in UI notifications.
+ */
+function escapeHtml(unsafe: string): string {
+	return unsafe
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#039;");
+}
+
 export default function contextStats(pi: ExtensionAPI) {
 	const state = createStatsState({ ...DEFAULT_OPTIONS } as ContextStatsOptions);
 
@@ -61,7 +74,7 @@ export default function contextStats(pi: ExtensionAPI) {
 			config.save(state.options);
 		} catch (err) {
 			ctx.ui.notify(
-				`mx-pi-settings: could not save config to ${config.path}: ${err instanceof Error ? err.message : String(err)}`,
+				`mx-pi-settings: could not save config to ${escapeHtml(config.path)}: ${escapeHtml(err instanceof Error ? err.message : String(err))}`,
 				"warning",
 			);
 		}
@@ -393,7 +406,7 @@ export default function contextStats(pi: ExtensionAPI) {
 					}
 					const value = arg.toLowerCase();
 					if (value !== "on" && value !== "off") {
-						ctx.ui.notify(`Expected on|off, got "${arg}". ${USAGE}`, "warning");
+						ctx.ui.notify(`Expected on|off, got "${escapeHtml(arg)}". ${USAGE}`, "warning");
 						return;
 					}
 					updateOptions(ctx, { [key]: value === "on" } as Partial<ContextStatsOptions>);
@@ -423,7 +436,7 @@ export default function contextStats(pi: ExtensionAPI) {
 				}
 
 				default: {
-					ctx.ui.notify(`Unknown mx-pi-settings argument: ${cmd}. ${USAGE}`, "warning");
+					ctx.ui.notify(`Unknown mx-pi-settings argument: ${escapeHtml(cmd)}. ${USAGE}`, "warning");
 				}
 			}
 		},
