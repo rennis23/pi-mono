@@ -43,6 +43,15 @@ const WIDGET_KEY = "mx-pi-context-stats";
 const USAGE =
 	"Usage: /mx-pi-settings [toggle|summary|rows <n>|subagent-rows <n>|subagents on|off|health on|off|placement above|below|reset]";
 
+function escapeHtml(str: string): string {
+	return str
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#039;");
+}
+
 export default function contextStats(pi: ExtensionAPI) {
 	const state = createStatsState({ ...DEFAULT_OPTIONS } as ContextStatsOptions);
 
@@ -393,7 +402,7 @@ export default function contextStats(pi: ExtensionAPI) {
 					}
 					const value = arg.toLowerCase();
 					if (value !== "on" && value !== "off") {
-						ctx.ui.notify(`Expected on|off, got "${arg}". ${USAGE}`, "warning");
+						ctx.ui.notify(`Expected on|off, got "${escapeHtml(arg)}". ${USAGE}`, "warning");
 						return;
 					}
 					updateOptions(ctx, { [key]: value === "on" } as Partial<ContextStatsOptions>);
@@ -423,7 +432,7 @@ export default function contextStats(pi: ExtensionAPI) {
 				}
 
 				default: {
-					ctx.ui.notify(`Unknown mx-pi-settings argument: ${cmd}. ${USAGE}`, "warning");
+					ctx.ui.notify(`Unknown mx-pi-settings argument: ${escapeHtml(cmd)}. ${USAGE}`, "warning");
 				}
 			}
 		},
