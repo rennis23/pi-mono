@@ -36,6 +36,7 @@ import {
 } from "./src/options.js";
 import { createStatsState } from "./src/state.js";
 import { buildStatusText, buildSummaryText, buildWidgetLines } from "./src/widget.js";
+import { escapeHtml } from "./src/utils.js";
 
 const STATUS_KEY = "mx-pi-context-stats";
 const WIDGET_KEY = "mx-pi-context-stats";
@@ -373,13 +374,13 @@ export default function contextStats(pi: ExtensionAPI) {
 					const [min, max] =
 						cmd === "rows" ? [HISTORY_ROWS_MIN, HISTORY_ROWS_MAX] : [SUBAGENT_ROWS_MIN, SUBAGENT_ROWS_MAX];
 					if (arg === undefined) {
-						ctx.ui.notify(`mx-pi-settings ${cmd}: ${state.options[key]}`, "info");
+						ctx.ui.notify(`mx-pi-settings ${escapeHtml(cmd)}: ${state.options[key]}`, "info");
 						return;
 					}
 					updateOptions(ctx, {
 						[key]: clampInt(arg, min, max, state.options[key]),
 					} as Partial<ContextStatsOptions>);
-					ctx.ui.notify(`mx-pi-settings ${cmd}: ${state.options[key]}`, "info");
+					ctx.ui.notify(`mx-pi-settings ${escapeHtml(cmd)}: ${state.options[key]}`, "info");
 					requestRender();
 					return;
 				}
@@ -388,16 +389,16 @@ export default function contextStats(pi: ExtensionAPI) {
 				case "health": {
 					const key = cmd === "subagents" ? "showSubagents" : "showHealth";
 					if (arg === undefined) {
-						ctx.ui.notify(`mx-pi-settings ${cmd}: ${state.options[key] ? "on" : "off"}`, "info");
+						ctx.ui.notify(`mx-pi-settings ${escapeHtml(cmd)}: ${state.options[key] ? "on" : "off"}`, "info");
 						return;
 					}
 					const value = arg.toLowerCase();
 					if (value !== "on" && value !== "off") {
-						ctx.ui.notify(`Expected on|off, got "${arg}". ${USAGE}`, "warning");
+						ctx.ui.notify(`Expected on|off, got "${escapeHtml(arg)}". ${USAGE}`, "warning");
 						return;
 					}
 					updateOptions(ctx, { [key]: value === "on" } as Partial<ContextStatsOptions>);
-					ctx.ui.notify(`mx-pi-settings ${cmd}: ${value}`, "info");
+					ctx.ui.notify(`mx-pi-settings ${escapeHtml(cmd)}: ${escapeHtml(value)}`, "info");
 					requestRender();
 					return;
 				}
@@ -410,7 +411,7 @@ export default function contextStats(pi: ExtensionAPI) {
 					updateOptions(ctx, { placement: arg === "above" ? "aboveEditor" : "belowEditor" });
 					// Placement is fixed at registration time, so re-register.
 					setupWidget(ctx);
-					ctx.ui.notify(`mx-pi-settings placement: ${arg}`, "info");
+					ctx.ui.notify(`mx-pi-settings placement: ${escapeHtml(arg)}`, "info");
 					return;
 				}
 
@@ -423,7 +424,7 @@ export default function contextStats(pi: ExtensionAPI) {
 				}
 
 				default: {
-					ctx.ui.notify(`Unknown mx-pi-settings argument: ${cmd}. ${USAGE}`, "warning");
+					ctx.ui.notify(`Unknown mx-pi-settings argument: ${escapeHtml(cmd)}. ${USAGE}`, "warning");
 				}
 			}
 		},
