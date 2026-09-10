@@ -35,6 +35,7 @@ import {
 	withOptions,
 } from "./src/options.js";
 import { createStatsState } from "./src/state.js";
+import { escapeHtml } from "./src/utils/escape.js";
 import { buildStatusText, buildSummaryText, buildWidgetLines } from "./src/widget.js";
 
 const STATUS_KEY = "mx-pi-context-stats";
@@ -60,10 +61,8 @@ export default function contextStats(pi: ExtensionAPI) {
 		try {
 			config.save(state.options);
 		} catch (err) {
-			ctx.ui.notify(
-				`mx-pi-settings: could not save config to ${config.path}: ${err instanceof Error ? err.message : String(err)}`,
-				"warning",
-			);
+			const errMsg = err instanceof Error ? err.message : String(err);
+			ctx.ui.notify(`mx-pi-settings: could not save config to ${config.path}: ${escapeHtml(errMsg)}`, "warning");
 		}
 	}
 
@@ -388,16 +387,16 @@ export default function contextStats(pi: ExtensionAPI) {
 				case "health": {
 					const key = cmd === "subagents" ? "showSubagents" : "showHealth";
 					if (arg === undefined) {
-						ctx.ui.notify(`mx-pi-settings ${cmd}: ${state.options[key] ? "on" : "off"}`, "info");
+						ctx.ui.notify(`mx-pi-settings ${escapeHtml(cmd)}: ${state.options[key] ? "on" : "off"}`, "info");
 						return;
 					}
 					const value = arg.toLowerCase();
 					if (value !== "on" && value !== "off") {
-						ctx.ui.notify(`Expected on|off, got "${arg}". ${USAGE}`, "warning");
+						ctx.ui.notify(`Expected on|off, got "${escapeHtml(arg)}". ${USAGE}`, "warning");
 						return;
 					}
 					updateOptions(ctx, { [key]: value === "on" } as Partial<ContextStatsOptions>);
-					ctx.ui.notify(`mx-pi-settings ${cmd}: ${value}`, "info");
+					ctx.ui.notify(`mx-pi-settings ${escapeHtml(cmd)}: ${value}`, "info");
 					requestRender();
 					return;
 				}
@@ -423,7 +422,7 @@ export default function contextStats(pi: ExtensionAPI) {
 				}
 
 				default: {
-					ctx.ui.notify(`Unknown mx-pi-settings argument: ${cmd}. ${USAGE}`, "warning");
+					ctx.ui.notify(`Unknown mx-pi-settings argument: ${escapeHtml(cmd)}. ${USAGE}`, "warning");
 				}
 			}
 		},
