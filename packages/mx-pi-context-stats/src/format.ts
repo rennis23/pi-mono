@@ -69,3 +69,19 @@ export function compactTools(tools: string[], max = 4): string {
 	const shown = limit - 1;
 	return `${tools.slice(0, shown).join(",")}+${tools.length - shown}`;
 }
+
+/**
+ * Escapes HTML characters in a string to prevent XSS vulnerabilities when
+ * passing user input to UI notification functions.
+ */
+export function escapeHtml(str: unknown): string {
+	if (str === null || str === undefined) {
+		return "";
+	}
+	return String(str)
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#039;");
+}

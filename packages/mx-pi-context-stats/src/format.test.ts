@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactTools, fmt, fmtCost, fmtDuration, fmtPct, fmtRate, shortModel } from "./format.js";
+import { compactTools, escapeHtml, fmt, fmtCost, fmtDuration, fmtPct, fmtRate, shortModel } from "./format.js";
 
 describe("fmt", () => {
 	it("renders small counts verbatim", () => {
@@ -120,5 +120,25 @@ describe("compactTools", () => {
 	it("handles empty and degenerate input", () => {
 		expect(compactTools([])).toBe("");
 		expect(compactTools(["read"], 0)).toBe("read");
+	});
+});
+
+describe("escapeHtml", () => {
+	it("escapes basic HTML characters", () => {
+		expect(escapeHtml("<script>alert('xss & \"owned\"')</script>")).toBe(
+			"&lt;script&gt;alert(&#039;xss &amp; &quot;owned&quot;&#039;)&lt;/script&gt;",
+		);
+	});
+
+	it("handles null and undefined by returning empty string", () => {
+		expect(escapeHtml(null)).toBe("");
+		expect(escapeHtml(undefined)).toBe("");
+	});
+
+	it("coerces other types to string", () => {
+		expect(escapeHtml(123)).toBe("123");
+		expect(escapeHtml(true)).toBe("true");
+		expect(escapeHtml(false)).toBe("false");
+		expect(escapeHtml({})).toBe("[object Object]");
 	});
 });
