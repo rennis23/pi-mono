@@ -69,3 +69,17 @@ export function compactTools(tools: string[], max = 4): string {
 	const shown = limit - 1;
 	return `${tools.slice(0, shown).join(",")}+${tools.length - shown}`;
 }
+
+/**
+ * Escapes characters that have special meaning in HTML to prevent XSS.
+ * Safely handles null, undefined and coercible values.
+ */
+export function escapeHtml(str: unknown): string {
+	if (str === undefined || str === null) return "";
+	return String(str)
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
+}
