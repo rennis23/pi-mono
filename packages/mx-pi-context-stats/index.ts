@@ -35,6 +35,7 @@ import {
 	withOptions,
 } from "./src/options.js";
 import { createStatsState } from "./src/state.js";
+import { escapeHtml } from "./src/utils/escape.js";
 import { buildStatusText, buildSummaryText, buildWidgetLines } from "./src/widget.js";
 
 const STATUS_KEY = "mx-pi-context-stats";
@@ -393,7 +394,7 @@ export default function contextStats(pi: ExtensionAPI) {
 					}
 					const value = arg.toLowerCase();
 					if (value !== "on" && value !== "off") {
-						ctx.ui.notify(`Expected on|off, got "${arg}". ${USAGE}`, "warning");
+						ctx.ui.notify(`Expected on|off, got "${escapeHtml(arg)}". ${USAGE}`, "warning");
 						return;
 					}
 					updateOptions(ctx, { [key]: value === "on" } as Partial<ContextStatsOptions>);
@@ -423,7 +424,7 @@ export default function contextStats(pi: ExtensionAPI) {
 				}
 
 				default: {
-					ctx.ui.notify(`Unknown mx-pi-settings argument: ${cmd}. ${USAGE}`, "warning");
+					ctx.ui.notify(`Unknown mx-pi-settings argument: ${escapeHtml(cmd)}. ${USAGE}`, "warning");
 				}
 			}
 		},
