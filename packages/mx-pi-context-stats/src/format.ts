@@ -6,6 +6,17 @@
  * widget, because a render that throws would take down the whole TUI.
  */
 
+/** Escapes HTML special characters to prevent XSS. */
+export function escapeHtml(value: unknown): string {
+	if (value === undefined || value === null) return "";
+	return String(value)
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&#39;");
+}
+
 /** Compact token count: 812 → "812", 8123 → "8.1k", 812_345 → "812k". */
 export function fmt(n: number): string {
 	if (!Number.isFinite(n)) return "0";
