@@ -1,5 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { compactTools, fmt, fmtCost, fmtDuration, fmtPct, fmtRate, shortModel } from "./format.js";
+import { compactTools, escapeHtml, fmt, fmtCost, fmtDuration, fmtPct, fmtRate, shortModel } from "./format.js";
+
+describe("escapeHtml", () => {
+	it("escapes special characters", () => {
+		expect(escapeHtml("a&b<c>d\"e'f")).toBe("a&amp;b&lt;c&gt;d&quot;e&#39;f");
+	});
+
+	it("handles null and undefined", () => {
+		expect(escapeHtml(null as any)).toBe("");
+		expect(escapeHtml(undefined as any)).toBe("");
+	});
+
+	it("handles empty strings", () => {
+		expect(escapeHtml("")).toBe("");
+	});
+
+	it("coerces other types to strings", () => {
+		expect(escapeHtml(123 as any)).toBe("123");
+	});
+});
 
 describe("fmt", () => {
 	it("renders small counts verbatim", () => {
