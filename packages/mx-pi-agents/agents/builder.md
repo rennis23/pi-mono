@@ -2,6 +2,7 @@
 name: builder
 description: Make a scoped code change with tests and report exactly what changed
 tools: [read, grep, find, ls, edit, write, bash]
+sandbox: os
 max_turns: 40
 timeout_ms: 900000
 token_budget: 300000

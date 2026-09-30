@@ -7,6 +7,8 @@
  * loading pi or a TUI.
  */
 
+import type { ChildTelemetrySink } from "./telemetry.js";
+
 /**
  * Thinking level. Mirrors pi-agent-core's union structurally so this package
  * needs no dependency on pi-agent-core for type-checking; a value of this type
@@ -39,6 +41,12 @@ export interface AgentDefinition {
 	 */
 	tools: string[] | undefined;
 	toolsInheritance: ToolsInheritance;
+	/**
+	 * Directory roots this agent may touch. `undefined` means absent (the run's
+	 * cwd); `[]` means the field was present and empty, which is a refusal.
+	 * Entries tighten the configured ceiling and are resolved against the cwd.
+	 */
+	scope: string[] | undefined;
 	model: string | undefined;
 	thinking: ThinkingLevel | undefined;
 	maxTurns: number | undefined;
@@ -117,6 +125,8 @@ export type RefusalReason =
 	| "definition-invalid"
 	| "unresolved-tool"
 	| "spawn-tool-grant"
+	| "scope-invalid"
+	| "scope-unenforceable"
 	| "recursion"
 	| "model-unavailable"
 	| "sandbox-unavailable"
@@ -148,6 +158,12 @@ export interface RunPlan {
 	isolation: IsolationMode;
 	sandbox: SandboxMode;
 	cwd: string;
+	/**
+	 * Effective path scope. `roots` are absolute directories the run may touch;
+	 * `unrestricted` is true only when an explicit `/` ceiling licensed an
+	 * unconfineable vector, in which case tool wrapping is skipped.
+	 */
+	scope: { roots: readonly string[]; unrestricted: boolean };
 	diagnostics: AgentDiagnostic[];
 }
 
@@ -180,6 +196,11 @@ export interface RunOptions {
 	onUpdate?: (partial: RunResult) => void;
 	/** Injected clock; tests pass a controllable one. */
 	now: () => number;
+	/**
+	 * When set, the runner publishes the child's lifecycle events for tracing.
+	 * Absent means no telemetry is collected or forwarded.
+	 */
+	telemetry?: ChildTelemetrySink;
 }
 
 /** Executes one planned run. Implementations: in-process and subprocess. */

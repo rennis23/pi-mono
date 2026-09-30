@@ -21,6 +21,31 @@ export type SandboxBackend = "seatbelt" | "bwrap";
 /** Seatbelt profile name used by `sandbox-exec -f`. */
 export const SEATBELT_PROFILE_NAME = "mx-pi-agents";
 
+/**
+ * Immutable runtime surface a sandboxed shell needs to start at all. The
+ * `system.sb` import grants the system runtime (the dynamic loader, `/dev`,
+ * `/etc`) but not user data; the three binary directories are added explicitly
+ * because `system.sb` alone does not let the shell find `cat`/`ls`. Reading
+ * `$HOME`, `~/.pi`, `~/.ssh`, `~/Library`, another project or a temp directory
+ * outside the run scope stays denied. Hand-listing every runtime path does not
+ * work — bash aborts on a missing dyld/IPC allowance — so the import is the
+ * honest, working form of the allowlist.
+ */
+export const SEATBELT_SYSTEM_PROFILE = "system.sb";
+
+/** System binary directories a sandboxed shell must read to exec external tools. */
+export const SEATBELT_SYSTEM_READ_ROOTS: readonly string[] = ["/usr", "/bin", "/sbin"];
+
+/** System paths a `bwrap` child needs read-only to exec bash (Linux). */
+export const BWRAP_READ_ROOTS: readonly string[] = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"];
+
+/** Deduplicate roots while preserving order. */
+function uniqueRoots(roots: readonly string[]): string[] {
+	const out: string[] = [];
+	for (const root of roots) if (root.length > 0 && !out.includes(root)) out.push(root);
+	return out;
+}
+
 /** Escape a path for a seatbelt `(literal ...)` / `(subpath ...)` clause. */
 function seatbeltQuote(value: string): string {
 	return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
@@ -29,22 +54,30 @@ function seatbeltQuote(value: string): string {
 /**
  * Generate a seatbelt profile.
  *
- * Default deny, then: read everything (a sandbox that hides the source tree
- * cannot do useful work), write only under `writeRoots`, and no network. The
- * write list is the child's working directory plus its temp directory, which
- * is what keeps `sandbox: os` from becoming a filesystem-wide capability.
+ * Default deny, then: read the immutable system allowlist plus the run's read
+ * roots (never a bare host-wide `(allow file-read*)`), write only under
+ * `writeRoots`, and no network. Writes are the primary capability this sandbox
+ * bounds; read confinement is per-root plus the documented system allowance.
  */
-export function buildSeatbeltProfile(writeRoots: readonly string[]): string {
-	const lines = ["(version 1)", "(deny default)", "(allow process-exec*)", "(allow process-fork)", "(allow signal)"];
+export function buildSeatbeltProfile(writeRoots: readonly string[], readRoots: readonly string[] = []): string {
+	const lines = ["(version 1)", "(deny default)"];
 
-	lines.push("; reads are unrestricted: the grant is about writes, not secrecy");
-	lines.push("(allow file-read*)");
+	lines.push(`; system runtime surface; grants process startup, not user data`);
+	lines.push(`(import ${seatbeltQuote(SEATBELT_SYSTEM_PROFILE)})`);
+	lines.push("(allow process-exec*)");
+	lines.push("(allow process-fork)");
+	lines.push("(allow signal)");
+
+	lines.push("; reads: the system binary directories plus the run scope (no host-wide file-read*)");
+	for (const root of uniqueRoots([...SEATBELT_SYSTEM_READ_ROOTS, ...readRoots])) {
+		lines.push(`(allow file-read* (subpath ${seatbeltQuote(root)}))`);
+	}
 	lines.push("(allow sysctl-read)");
 	lines.push("(allow mach-lookup)");
 
 	lines.push("; writes only under the roots the runner explicitly allows");
 	lines.push("(deny file-write*)");
-	for (const root of writeRoots) {
+	for (const root of uniqueRoots(writeRoots)) {
 		lines.push(`(allow file-write* (subpath ${seatbeltQuote(root)}))`);
 	}
 
@@ -60,21 +93,18 @@ export function buildSeatbeltArgv(profilePath: string, command: string): string[
 }
 
 /** Build the `bwrap` argv that runs `command` with the given writable roots. */
-export function buildBwrapArgv(command: string, writeRoots: readonly string[], cwd: string): string[] {
-	const args = [
-		"--unshare-all",
-		"--die-with-parent",
-		"--ro-bind",
-		"/",
-		"/",
-		"--dev",
-		"/dev",
-		"--proc",
-		"/proc",
-		"--tmpfs",
-		"/tmp",
-	];
-	for (const root of writeRoots) args.push("--bind", root, root);
+export function buildBwrapArgv(
+	command: string,
+	writeRoots: readonly string[],
+	readRoots: readonly string[] = [],
+	cwd: string,
+): string[] {
+	const args = ["--unshare-all", "--die-with-parent"];
+	// Read-only binds for the system runtime and the run scope. There is no
+	// `--ro-bind / /`: the child sees only these roots.
+	for (const root of uniqueRoots([...BWRAP_READ_ROOTS, ...readRoots])) args.push("--ro-bind", root, root);
+	args.push("--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp");
+	for (const root of uniqueRoots(writeRoots)) args.push("--bind", root, root);
 	args.push("--chdir", cwd, "/bin/bash", "-c", command);
 	return args;
 }
@@ -121,6 +151,8 @@ export function sandboxUnavailableReason(platform: NodeJS.Platform = process.pla
 export interface SandboxBashOptions {
 	/** Roots the command may write to. */
 	writeRoots: readonly string[];
+	/** Roots the command may read, in addition to the system allowlist. Defaults to `writeRoots`. */
+	readRoots?: readonly string[];
 	/** Platform override for tests. */
 	platform?: NodeJS.Platform;
 }
@@ -141,11 +173,12 @@ export function createSandboxedBashOperations(local: BashOperations, options: Sa
 
 	return {
 		exec(command, cwd, execOptions) {
-			const roots = options.writeRoots.length > 0 ? options.writeRoots : [cwd];
+			const writeRoots = options.writeRoots.length > 0 ? options.writeRoots : [cwd];
+			const readRoots = options.readRoots !== undefined ? options.readRoots : writeRoots;
 			if (backend === "seatbelt") {
 				// The profile is passed inline via `-p` so no temp file is created
 				// inside the target repository.
-				const profile = buildSeatbeltProfile(roots);
+				const profile = buildSeatbeltProfile(writeRoots, readRoots);
 				return local.exec(
 					`sandbox-exec -p ${shellQuote(profile)} /bin/bash -c ${shellQuote(command)}`,
 					cwd,
@@ -154,7 +187,7 @@ export function createSandboxedBashOperations(local: BashOperations, options: Sa
 			}
 			const bwrap = whichBinary("bwrap", process.env.PATH);
 			if (bwrap === undefined) throw new Error(sandboxUnavailableReason(platform));
-			const argv = buildBwrapArgv(command, roots, cwd);
+			const argv = buildBwrapArgv(command, writeRoots, readRoots, cwd);
 			return local.exec([bwrap, ...argv].map(shellQuote).join(" "), cwd, execOptions);
 		},
 	};

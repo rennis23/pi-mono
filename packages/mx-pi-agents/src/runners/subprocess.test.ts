@@ -28,6 +28,7 @@ function plan(overrides: Partial<RunPlan> = {}): RunPlan {
 		isolation: "subprocess",
 		sandbox: "none",
 		cwd: "/work",
+		scope: { roots: ["/work"], unrestricted: false },
 		diagnostics: [],
 		...overrides,
 	};

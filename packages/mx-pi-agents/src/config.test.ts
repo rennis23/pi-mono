@@ -102,6 +102,31 @@ describe("parseConfig", () => {
 		parseConfig({ version: 99 }, found);
 		expect(found.some((d) => d.message.includes("version 99"))).toBe(true);
 	});
+
+	it("reads a scope ceiling and leaves an absent one absent", () => {
+		const found = diagnostics();
+		const withScope = parseConfig({ scope: ["/one", "  /two  "] }, found);
+		expect(withScope.scope).toEqual(["/one", "/two"]);
+		expect(found).toEqual([]);
+
+		const without = parseConfig({}, diagnostics());
+		expect(without.scope).toBeUndefined();
+		expect("scope" in defaultConfig()).toBe(false);
+	});
+
+	it("drops a wrong-typed scope with a diagnostic", () => {
+		const found = diagnostics();
+		const config = parseConfig({ scope: "/not-a-list" }, found);
+		expect(config.scope).toBeUndefined();
+		expect(found.some((d) => d.message.includes("scope") && d.level === "warning")).toBe(true);
+	});
+
+	it("drops malformed scope entries but keeps valid ones", () => {
+		const found = diagnostics();
+		const config = parseConfig({ scope: ["/ok", 42, "", null] }, found);
+		expect(config.scope).toEqual(["/ok"]);
+		expect(found.filter((d) => d.message.includes("scope")).length).toBe(3);
+	});
 });
 
 describe("serializeConfig", () => {
@@ -130,6 +155,25 @@ describe("serializeConfig", () => {
 
 	it("ends with a newline", () => {
 		expect(serializeConfig(defaultConfig()).endsWith("\n")).toBe(true);
+	});
+
+	it("emits scope only when present, before approvals", () => {
+		const config = defaultConfig();
+		expect(serializeConfig(config)).not.toContain('"scope"');
+
+		config.scope = ["/ceiling"];
+		const text = serializeConfig(config);
+		expect(text.indexOf('"scope"')).toBeGreaterThan(text.indexOf('"agentPaths"'));
+		expect(text.indexOf('"scope"')).toBeLessThan(text.indexOf('"approvals"'));
+	});
+
+	it("round-trips a scope ceiling", () => {
+		const config = defaultConfig();
+		config.scope = ["/a", "/b"];
+		const parsed = parseConfig(JSON.parse(serializeConfig(config)), diagnostics());
+		expect(parsed.scope).toEqual(["/a", "/b"]);
+		// CONFIG_VERSION stays 1: the field is additive and unknown fields are tolerated.
+		expect(parsed.version).toBe(config.version);
 	});
 });
 
@@ -180,6 +224,15 @@ describe("createConfigStore", () => {
 		store.save(config);
 		const { config: loaded } = store.load();
 		expect(loaded.agentPaths).toEqual([join(agentDir, "extensions", "../shared/agents")]);
+	});
+
+	it("resolves a saved scope ceiling against the config directory", () => {
+		const store = createConfigStore(agentDir);
+		const config = defaultConfig();
+		config.scope = ["../ceiling", "/absolute"];
+		store.save(config);
+		const { config: loaded } = store.load();
+		expect(loaded.scope).toEqual([join(agentDir, "extensions", "../ceiling"), "/absolute"]);
 	});
 
 	it("falls back to defaults with a diagnostic on corrupt JSON", () => {

@@ -1,14 +1,17 @@
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	BWRAP_READ_ROOTS,
 	buildBwrapArgv,
 	buildSeatbeltArgv,
 	buildSeatbeltProfile,
 	createSandboxedBashOperations,
 	detectBackend,
 	isSandboxAvailable,
+	SEATBELT_SYSTEM_READ_ROOTS,
 	sandboxUnavailableReason,
 	shellQuote,
 	whichBinary,
@@ -17,7 +20,7 @@ import { writeSystemPromptFile } from "./subprocess.js";
 
 describe("buildSeatbeltProfile", () => {
 	it("denies by default and allows writes only under the roots", () => {
-		const profile = buildSeatbeltProfile(["/work/repo"]);
+		const profile = buildSeatbeltProfile(["/work/repo"], ["/work/repo"]);
 		expect(profile).toContain("(deny default)");
 		expect(profile).toContain("(deny file-write*)");
 		expect(profile).toContain('(allow file-write* (subpath "/work/repo"))');
@@ -25,41 +28,56 @@ describe("buildSeatbeltProfile", () => {
 	});
 
 	it("denies network", () => {
-		expect(buildSeatbeltProfile(["/work"]).includes("(deny network*)")).toBe(true);
+		expect(buildSeatbeltProfile(["/work"], ["/work"]).includes("(deny network*)")).toBe(true);
 	});
 
-	it("allows reads so the child can see the source tree", () => {
-		expect(buildSeatbeltProfile(["/work"]).includes("(allow file-read*)")).toBe(true);
+	it("imports the system runtime profile and never allows a bare host-wide read", () => {
+		const profile = buildSeatbeltProfile(["/work"], ["/work"]);
+		expect(profile).toContain('(import "system.sb")');
+		expect(profile).not.toMatch(/\(allow file-read\*\)/);
 	});
 
-	it("emits one clause per root", () => {
-		const profile = buildSeatbeltProfile(["/a", "/b"]);
+	it("emits one read clause per system allowlist root and per scope root", () => {
+		const profile = buildSeatbeltProfile(["/work"], ["/work", "/other"]);
+		for (const root of SEATBELT_SYSTEM_READ_ROOTS) {
+			expect(profile).toContain(`(allow file-read* (subpath "${root}"))`);
+		}
+		expect(profile).toContain('(allow file-read* (subpath "/work"))');
+		expect(profile).toContain('(allow file-read* (subpath "/other"))');
+	});
+
+	it("emits one write clause per root", () => {
+		const profile = buildSeatbeltProfile(["/a", "/b"], ["/a", "/b"]);
 		expect(profile).toContain('(allow file-write* (subpath "/a"))');
 		expect(profile).toContain('(allow file-write* (subpath "/b"))');
 	});
 
 	it("escapes quotes in paths", () => {
-		const profile = buildSeatbeltProfile(['/we"ird']);
+		const profile = buildSeatbeltProfile(['/we"ird'], ['/we"ird']);
 		expect(profile).toContain('(subpath "/we\\"ird")');
 	});
 
 	it("produces a stable golden profile", () => {
-		expect(buildSeatbeltProfile(["/w"])).toMatchInlineSnapshot(`
-			"(version 1)
-			(deny default)
-			(allow process-exec*)
-			(allow process-fork)
-			(allow signal)
-			; reads are unrestricted: the grant is about writes, not secrecy
-			(allow file-read*)
-			(allow sysctl-read)
-			(allow mach-lookup)
-			; writes only under the roots the runner explicitly allows
-			(deny file-write*)
-			(allow file-write* (subpath "/w"))
-			; no network egress from a sandboxed child
-			(deny network*)"
-		`);
+		const expected = [
+			"(version 1)",
+			"(deny default)",
+			"; system runtime surface; grants process startup, not user data",
+			'(import "system.sb")',
+			"(allow process-exec*)",
+			"(allow process-fork)",
+			"(allow signal)",
+			"; reads: the system binary directories plus the run scope (no host-wide file-read*)",
+			...SEATBELT_SYSTEM_READ_ROOTS.map((root) => `(allow file-read* (subpath "${root}"))`),
+			'(allow file-read* (subpath "/r"))',
+			"(allow sysctl-read)",
+			"(allow mach-lookup)",
+			"; writes only under the roots the runner explicitly allows",
+			"(deny file-write*)",
+			'(allow file-write* (subpath "/w"))',
+			"; no network egress from a sandboxed child",
+			"(deny network*)",
+		].join("\n");
+		expect(buildSeatbeltProfile(["/w"], ["/r"])).toBe(expected);
 	});
 });
 
@@ -71,7 +89,7 @@ describe("buildSeatbeltArgv", () => {
 
 describe("buildBwrapArgv", () => {
 	it("unshares all namespaces and binds the writable roots", () => {
-		const argv = buildBwrapArgv("ls", ["/work"], "/work");
+		const argv = buildBwrapArgv("ls", ["/work"], ["/work"], "/work");
 		expect(argv).toContain("--unshare-all");
 		expect(argv).toContain("--die-with-parent");
 		expect(argv).toContain("--ro-bind");
@@ -80,36 +98,48 @@ describe("buildBwrapArgv", () => {
 		expect(argv.slice(bindIndex, bindIndex + 3)).toEqual(["--bind", "/work", "/work"]);
 	});
 
+	it("never binds the filesystem root read-only", () => {
+		const argv = buildBwrapArgv("ls", ["/work"], ["/work"], "/work");
+		expect(argv.join(" ")).not.toContain("--ro-bind / /");
+	});
+
+	it("ro-binds the system allowlist and the scope read roots", () => {
+		const argv = buildBwrapArgv("ls", ["/work"], ["/work"], "/work");
+		for (const root of BWRAP_READ_ROOTS) {
+			expect(argv.join(" ")).toContain(`--ro-bind ${root} ${root}`);
+		}
+		expect(argv.join(" ")).toContain("--ro-bind /work /work");
+	});
+
 	it("chdirs into the working directory and runs bash", () => {
-		const argv = buildBwrapArgv("ls", ["/work"], "/work");
+		const argv = buildBwrapArgv("ls", ["/work"], ["/work"], "/work");
 		const chdirIndex = argv.indexOf("--chdir");
 		expect(argv.slice(chdirIndex)).toEqual(["--chdir", "/work", "/bin/bash", "-c", "ls"]);
 	});
 
 	it("golden-matches a full argv", () => {
-		expect(buildBwrapArgv("ls", ["/work"], "/work")).toMatchInlineSnapshot(`
-			[
-			  "--unshare-all",
-			  "--die-with-parent",
-			  "--ro-bind",
-			  "/",
-			  "/",
-			  "--dev",
-			  "/dev",
-			  "--proc",
-			  "/proc",
-			  "--tmpfs",
-			  "/tmp",
-			  "--bind",
-			  "/work",
-			  "/work",
-			  "--chdir",
-			  "/work",
-			  "/bin/bash",
-			  "-c",
-			  "ls",
-			]
-		`);
+		expect(buildBwrapArgv("ls", ["/w"], ["/r"], "/w")).toEqual([
+			"--unshare-all",
+			"--die-with-parent",
+			...BWRAP_READ_ROOTS.flatMap((root) => ["--ro-bind", root, root]),
+			"--ro-bind",
+			"/r",
+			"/r",
+			"--dev",
+			"/dev",
+			"--proc",
+			"/proc",
+			"--tmpfs",
+			"/tmp",
+			"--bind",
+			"/w",
+			"/w",
+			"--chdir",
+			"/w",
+			"/bin/bash",
+			"-c",
+			"ls",
+		]);
 	});
 });
 
@@ -162,6 +192,26 @@ describe("createSandboxedBashOperations", () => {
 		if (dir) rmSync(dir, { recursive: true, force: true });
 		dir = undefined;
 	});
+
+	it.skipIf(process.platform !== "darwin" || !existsSync("/usr/bin/sandbox-exec"))(
+		"runs a command under the narrowed seatbelt profile",
+		async () => {
+			// The profile is only useful if bash can still start under it. This is the
+			// smoke test for the read narrowing's system allowlist.
+			dir = realpathSync(mkdtempSync(join(tmpdir(), "mx-pi-agents-sandbox-smoke-")));
+			writeFileSync(join(dir, "in.txt"), "INSIDE_MARKER");
+			const operations = createSandboxedBashOperations(createLocalBashOperations(), {
+				writeRoots: [dir],
+				readRoots: [dir],
+			});
+			const chunks: Buffer[] = [];
+			const result = await operations.exec(`cat ${join(dir, "in.txt")}`, dir, {
+				onData: (data: Buffer) => chunks.push(data),
+			});
+			expect(result.exitCode).toBe(0);
+			expect(Buffer.concat(chunks).toString("utf8")).toContain("INSIDE_MARKER");
+		},
+	);
 
 	it("refuses to construct on an unsupported platform", () => {
 		expect(() =>

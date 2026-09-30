@@ -16,6 +16,7 @@
  * what makes invariant 1 of the design testable by inspection.
  */
 
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -25,6 +26,7 @@ import {
 	createBashToolDefinition,
 	createLocalBashOperations,
 	DefaultResourceLoader,
+	type InlineExtension,
 	type ModelRuntime,
 	SessionManager,
 	SettingsManager,
@@ -33,7 +35,9 @@ import {
 import { BudgetTracker, budgetStopReason } from "../budget.js";
 import type { Runner, RunOptions, RunPlan, RunResult, TokenUsage } from "../types.js";
 import { zeroUsage } from "../types.js";
+import { buildGrantedTools } from "./confine.js";
 import { createSandboxedBashOperations, isSandboxAvailable, sandboxUnavailableReason } from "./sandbox.js";
+import { createChildTelemetryExtension } from "./telemetry.js";
 
 /** Names of the built-in tools the child can be granted. */
 export const BUILTIN_TOOL_NAMES: readonly string[] = ["read", "bash", "edit", "write", "grep", "find", "ls"];
@@ -144,6 +148,15 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): Runner {
 	};
 }
 
+export interface ChildResourceLoaderOptions {
+	/**
+	 * Inline extensions to load even with discovery disabled. Inline factories
+	 * bypass `noExtensions`, so this is the seam for child telemetry: nothing
+	 * here can be discovered from the target repository.
+	 */
+	extensionFactories?: InlineExtension[];
+}
+
 /**
  * Build the child resource loader.
  *
@@ -152,11 +165,15 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): Runner {
  * `.pi/skills/**`, `.pi/extensions/**` or `AGENTS.md` can reach the child.
  * Exported so the SDK integration test asserts this without a model call.
  */
-export function createChildResourceLoader(agentDir: string, systemPrompt: string): DefaultResourceLoader {
+export function createChildResourceLoader(
+	agentDir: string,
+	systemPrompt: string,
+	options: ChildResourceLoaderOptions = {},
+): DefaultResourceLoader {
 	if (agentDir.trim().length === 0) {
 		throw new Error("createChildResourceLoader requires a non-empty agentDir");
 	}
-	return new DefaultResourceLoader({
+	const loaderOptions: ConstructorParameters<typeof DefaultResourceLoader>[0] = {
 		// Neutral cwd: the loader must never be pointed at the target repo.
 		cwd: agentDir,
 		agentDir,
@@ -167,7 +184,9 @@ export function createChildResourceLoader(agentDir: string, systemPrompt: string
 		noPromptTemplates: true,
 		noThemes: true,
 		noContextFiles: true,
-	});
+	};
+	if (options.extensionFactories) loaderOptions.extensionFactories = options.extensionFactories;
+	return new DefaultResourceLoader(loaderOptions);
 }
 
 async function runInProcess(plan: RunPlan, options: RunOptions, deps: InProcessRunnerDeps): Promise<RunResult> {
@@ -232,12 +251,28 @@ async function runInProcess(plan: RunPlan, options: RunOptions, deps: InProcessR
 	options.signal.addEventListener("abort", abortListener, { once: true });
 
 	try {
-		const resourceLoader = createChildResourceLoader(deps.agentDir, plan.systemPrompt);
+		// Exactly one inline extension is added when telemetry is on, and it is
+		// constructed here rather than discovered, so the child still sees no
+		// repository-controlled extension.
+		const resourceLoader = createChildResourceLoader(deps.agentDir, plan.systemPrompt, {
+			extensionFactories: options.telemetry
+				? [
+						createChildTelemetryExtension({
+							sink: options.telemetry,
+							runId: randomUUID(),
+							agent: plan.agentName,
+						}),
+					]
+				: undefined,
+		});
 		await resourceLoader.reload();
 
 		// The sandboxed bash is a custom tool definition that replaces the built-in
 		// one: pi's own bash tool is never reachable when `sandbox: os` is set.
-		const customTools: ToolDefinition<any, any, any>[] = [];
+		// The granted file tools are wrapped here too, so the model's raw path
+		// argument is checked against the run scope before pi's tool runs. An
+		// unrestricted run has no check to make and gets no wrappers.
+		const customTools: ToolDefinition<any, any, any>[] = buildGrantedTools(plan);
 		if (plan.sandbox === "os" && plan.tools.includes("bash")) {
 			if (!sandboxProbe()) {
 				return failure(
@@ -251,7 +286,10 @@ async function runInProcess(plan: RunPlan, options: RunOptions, deps: InProcessR
 			const local = createLocalBashOperations();
 			customTools.push(
 				createBashToolDefinition(plan.cwd, {
-					operations: createSandboxedBashOperations(local, { writeRoots: [plan.cwd] }),
+					operations: createSandboxedBashOperations(local, {
+						writeRoots: plan.scope.roots,
+						readRoots: plan.scope.roots,
+					}),
 				}),
 			);
 		}

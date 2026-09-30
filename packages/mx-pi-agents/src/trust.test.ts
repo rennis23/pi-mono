@@ -21,6 +21,7 @@ function makeAgent(kind: SourceKind, name = "reviewer", hash = HASH): PinnedAgen
 		description: `${name} description`,
 		tools: ["read"],
 		toolsInheritance: "none",
+		scope: undefined,
 		model: undefined,
 		thinking: undefined,
 		maxTurns: undefined,

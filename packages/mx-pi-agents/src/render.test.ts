@@ -5,6 +5,7 @@ import {
 	type RenderTheme,
 	renderCallLines,
 	renderDiagnostics,
+	renderDirectiveMessage,
 	renderResultLines,
 	renderRosterLines,
 	resultGlyph,
@@ -154,6 +155,29 @@ describe("renderRosterLines", () => {
 			theme,
 		);
 		for (const line of rendered) expect(line).not.toMatch(CONTROL);
+	});
+});
+
+describe("renderDirectiveMessage", () => {
+	it("renders details through the result renderer", () => {
+		const details: AgentToolDetails = {
+			mode: "pipeline",
+			results: [result()],
+			diagnostics: [],
+			refusalReason: undefined,
+		};
+		const lines = renderDirectiveMessage({ content: "text", details }, theme).join("\n");
+		expect(lines).toContain("mx-pi-agents directive");
+		expect(lines).toContain("explorer");
+	});
+
+	it("falls back to the message content when details are missing", () => {
+		expect(renderDirectiveMessage({ content: "hello" }, theme).join("\n")).toContain("hello");
+	});
+
+	it("renders a refusal", () => {
+		const details: AgentToolDetails = { mode: "single", results: [], diagnostics: [], refusalReason: "nope" };
+		expect(renderDirectiveMessage({ details }, theme).join("\n")).toContain("refused");
 	});
 });
 

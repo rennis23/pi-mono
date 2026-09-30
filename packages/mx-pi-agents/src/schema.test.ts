@@ -28,6 +28,7 @@ describe("parseAgentDefinition", () => {
 						"name: reviewer",
 						"description: Read-only code review",
 						"tools: [read, grep, find, ls]",
+						"scope: [src, docs]",
 						"model: anthropic/claude-sonnet-4-5",
 						"thinking: medium",
 						"max_turns: 20",
@@ -44,6 +45,7 @@ describe("parseAgentDefinition", () => {
 		expect(definition.name).toBe("reviewer");
 		expect(definition.description).toBe("Read-only code review");
 		expect(definition.tools).toEqual(["read", "grep", "find", "ls"]);
+		expect(definition.scope).toEqual(["src", "docs"]);
 		expect(definition.model).toBe("anthropic/claude-sonnet-4-5");
 		expect(definition.thinking).toBe("medium");
 		expect(definition.maxTurns).toBe(20);
@@ -67,6 +69,25 @@ describe("parseAgentDefinition", () => {
 		const empty = expectOk(parseAgentDefinition(md("name: a\ndescription: d\ntools: []")));
 		expect(absent.tools).toBeUndefined();
 		expect(empty.tools).toEqual([]);
+	});
+
+	it("parses scope, keeps an empty list, and defaults absent to undefined", () => {
+		const absent = expectOk(parseAgentDefinition(md("name: a\ndescription: d")));
+		expect(absent.scope).toBeUndefined();
+
+		const empty = expectOk(parseAgentDefinition(md("name: a\ndescription: d\nscope: []")));
+		expect(empty.scope).toEqual([]);
+
+		const listed = expectOk(parseAgentDefinition(md("name: a\ndescription: d\nscope: [src, src, docs]")));
+		expect(listed.scope).toEqual(["src", "docs"]);
+	});
+
+	it("drops a definition whose scope is the wrong shape", () => {
+		// Unknown fields and wrong-typed fields both drop the whole definition, so
+		// the KNOWN_FIELDS registration must land in the same change as the parse.
+		expectErr(parseAgentDefinition(md("name: a\ndescription: d\nscope: src")), "scope must be a list");
+		expectErr(parseAgentDefinition(md("name: a\ndescription: d\nscope: [src, 2]")), "scope contains an invalid path");
+		expectErr(parseAgentDefinition(md("name: a\ndescription: d\nscopes: [src]")), 'unknown field "scopes"');
 	});
 
 	it("keeps an empty tool list empty rather than defaulting to all tools", () => {

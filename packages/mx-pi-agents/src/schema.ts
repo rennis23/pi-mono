@@ -17,6 +17,8 @@ const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 /** Model labels are `provider/model-id` or a bare model id. */
 const MODEL_PATTERN = /^[A-Za-z0-9._/:-]{1,200}$/;
+/** Scope entries: non-empty, no control characters, bounded length. */
+const PATH_ENTRY_PATTERN = /^[^\u0000-\u001F\u007F]{1,1024}$/;
 const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export const MAX_MAX_TURNS = 1_000;
@@ -117,11 +119,36 @@ function readToolList(data: Record<string, unknown>, key: string, errors: string
 	return out;
 }
 
+/** Read a string-list field holding filesystem paths, deduping in order. */
+function readPathList(data: Record<string, unknown>, key: string, errors: string[]): string[] | undefined {
+	const value = data[key];
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		errors.push(`${key} must be a list of paths`);
+		return undefined;
+	}
+	const out: string[] = [];
+	for (const item of value) {
+		if (typeof item !== "string") {
+			errors.push(`${key} contains an invalid path entry`);
+			return undefined;
+		}
+		const entry = item.trim();
+		if (!PATH_ENTRY_PATTERN.test(entry)) {
+			errors.push(`${key} contains an invalid path entry`);
+			return undefined;
+		}
+		if (!out.includes(entry)) out.push(entry);
+	}
+	return out;
+}
+
 const KNOWN_FIELDS = new Set([
 	"name",
 	"description",
 	"tools",
 	"tools_inheritance",
+	"scope",
 	"model",
 	"thinking",
 	"max_turns",
@@ -161,6 +188,7 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 	}
 
 	const tools = readToolList(data, "tools", errors);
+	const scope = readPathList(data, "scope", errors);
 	let toolsInheritance: ToolsInheritance = "none";
 	if (data.tools_inheritance !== undefined && data.tools_inheritance !== null) {
 		if (data.tools_inheritance === "none" || data.tools_inheritance === "parent") {
@@ -214,6 +242,7 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 			description: rawDescription!,
 			tools,
 			toolsInheritance,
+			scope,
 			model,
 			thinking,
 			maxTurns,

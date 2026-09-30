@@ -19,19 +19,47 @@
  * flags, and delegates every decision to `src/`.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { randomUUID } from "node:crypto";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+	ExtensionUIContext,
+} from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import type { AutocompleteProvider, TUI } from "@earendil-works/pi-tui";
+import { matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { completionItems, directiveContext, toCompletionSource } from "./src/complete.js";
 import { type AgentsConfig, createConfigStore } from "./src/config.js";
-import { type DelegationStep, type OrchestratorDeps, runChain, runParallel, runSingle } from "./src/modes.js";
+import { parseDirective } from "./src/directive.js";
+import {
+	type DelegationOutcome,
+	type DelegationStep,
+	type OrchestratorDeps,
+	type PipelineStage,
+	runChain,
+	runParallel,
+	runPipeline,
+	runSingle,
+} from "./src/modes.js";
 import { aggregateResults, createRedactor, DEFAULT_PER_RESULT_BYTES, DEFAULT_TOTAL_BYTES } from "./src/output.js";
 import { describeRefusal } from "./src/policy.js";
+import {
+	createProgress,
+	markRemaining,
+	markRunning,
+	markSettled,
+	type ProgressModel,
+	renderProgress,
+	SPINNER_FRAMES,
+} from "./src/progress.js";
 import { bundledAgentsDir, discoverAgents, type RegistryDirs, rosterEntries } from "./src/registry.js";
 import {
 	type AgentToolDetails,
 	renderCallLines,
 	renderDiagnostics,
+	renderDirectiveMessage,
 	renderResultLines,
 	renderRosterLines,
 } from "./src/render.js";
@@ -39,10 +67,157 @@ import { type RunnerRegistry, selectRunner, unavailableRunner } from "./src/runn
 import { createInProcessRunner } from "./src/runners/in-process.js";
 import { isSandboxAvailable } from "./src/runners/sandbox.js";
 import { CHILD_ENV_MARKER, createSubprocessRunner } from "./src/runners/subprocess.js";
+import { CHILD_TELEMETRY_CHANNEL, type ChildTelemetrySink } from "./src/telemetry.js";
 import { approvalRequest, checkTrust, gatedAgents, recordApproval, withApprovals } from "./src/trust.js";
 import { type AgentDiagnostic, type PinnedAgent, type RunPlan, type RunResult, zeroUsage } from "./src/types.js";
 
 const CHILD_MARKER_VALUE = "1";
+
+/** Custom message type for a `#` directive result appended to the transcript. */
+const DIRECTIVE_MESSAGE = "mx-pi-agents.directive";
+
+/**
+ * Stack a `#`-directive autocomplete provider on top of the built-in one.
+ *
+ * Outside a directive context every call is delegated to `current`, so this
+ * provider can never shadow built-in file or command completion. Inside one it
+ * returns registry items and a `prefix` that the editor's generic
+ * `applyCompletion` branch replaces with `item.value`.
+ */
+function createDirectiveAutocomplete(
+	current: AutocompleteProvider,
+	getRoster: () => PinnedAgent[],
+): AutocompleteProvider {
+	return {
+		triggerCharacters: ["#"],
+		async getSuggestions(lines, cursorLine, cursorCol, options) {
+			try {
+				const line = lines[cursorLine] ?? "";
+				const context = directiveContext(line.slice(0, cursorCol));
+				if (context === undefined) return current.getSuggestions(lines, cursorLine, cursorCol, options);
+				return { items: completionItems(toCompletionSource(getRoster()), context), prefix: context.prefix };
+			} catch {
+				return current.getSuggestions(lines, cursorLine, cursorCol, options);
+			}
+		},
+		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+			return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+		},
+		shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+			return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? false;
+		},
+	};
+}
+
+const PROGRESS_WIDGET_KEY = "mx-pi-agents-progress";
+
+/**
+ * Persistent progress widget shown above the editor while a delegation runs.
+ *
+ * Modeled on pi-code's todo overlay: register once in factory form, live-read
+ * the model from `render`, and drive the spinner with a timer that calls
+ * `requestRender()`. Every pi call is wrapped, so a disposing session or a
+ * terminal without widget support degrades to the result message instead of
+ * crashing the run.
+ */
+class AgentProgressOverlay {
+	private uiCtx?: ExtensionUIContext;
+	private widgetRegistered = false;
+	private tui?: TUI;
+	private model?: ProgressModel;
+	private frame = 0;
+	private timer?: ReturnType<typeof setInterval>;
+
+	setUICtx(ui: ExtensionUIContext): void {
+		// Identity-compare so repeat session_start handlers are idempotent and a
+		// reload (new ctx) re-registers the widget.
+		if (ui !== this.uiCtx) {
+			this.uiCtx = ui;
+			this.widgetRegistered = false;
+			this.tui = undefined;
+		}
+	}
+
+	show(model: ProgressModel): void {
+		this.model = model;
+		this.frame = 0;
+		if (!this.uiCtx) return;
+		this.register();
+		this.startTimer();
+	}
+
+	refresh(): void {
+		try {
+			this.tui?.requestRender();
+		} catch {
+			/* a disposing TUI must not crash the run */
+		}
+	}
+
+	hide(): void {
+		this.stopTimer();
+		this.model = undefined;
+		if (!this.widgetRegistered) return;
+		try {
+			this.uiCtx?.setWidget(PROGRESS_WIDGET_KEY, undefined);
+		} catch {
+			/* ignore */
+		}
+		this.widgetRegistered = false;
+		this.tui = undefined;
+	}
+
+	dispose(): void {
+		this.hide();
+		this.uiCtx = undefined;
+	}
+
+	private register(): void {
+		if (this.widgetRegistered) {
+			this.refresh();
+			return;
+		}
+		try {
+			this.uiCtx?.setWidget(
+				PROGRESS_WIDGET_KEY,
+				(tui, theme) => {
+					this.tui = tui;
+					return {
+						render: (width: number) => {
+							if (!this.model) return [];
+							return renderProgress(this.model, theme, this.frame).map((line) =>
+								truncateToWidth(line, width, "…"),
+							);
+						},
+						invalidate: () => {
+							this.widgetRegistered = false;
+							this.tui = undefined;
+						},
+					};
+				},
+				{ placement: "aboveEditor" },
+			);
+			this.widgetRegistered = true;
+		} catch {
+			/* widget support is optional; the result message still reports the run */
+		}
+	}
+
+	private startTimer(): void {
+		this.stopTimer();
+		this.timer = setInterval(() => {
+			this.frame = (this.frame + 1) % SPINNER_FRAMES.length;
+			this.refresh();
+		}, 100);
+		(this.timer as { unref?: () => void }).unref?.();
+	}
+
+	private stopTimer(): void {
+		if (this.timer !== undefined) clearInterval(this.timer);
+		this.timer = undefined;
+	}
+}
+
 const USAGE =
 	"Usage: /mx-pi-agents [list | approve [name] | status | refresh]\n" +
 	"  list     show the roster with source, trust and pinned hash\n" +
@@ -84,6 +259,34 @@ function agentDirFromPath(configPath: string): string {
 	return dir;
 }
 
+/**
+ * Build the child-telemetry publisher for one delegation.
+ *
+ * Every agent of the call shares one `delegationId`; each child run adds its
+ * own `runId` inside the runner. The parent session id is carried so a consumer
+ * can nest child spans under the session it already traces. A missing event bus
+ * or session id disables telemetry instead of failing the run.
+ */
+function createChildTelemetrySink(pi: ExtensionAPI, ctx: ExtensionContext): ChildTelemetrySink | undefined {
+	try {
+		const events = pi.events;
+		if (!events) return undefined;
+		return {
+			delegationId: randomUUID(),
+			parentSessionId: ctx.sessionManager.getSessionId(),
+			emit: (envelope) => {
+				try {
+					events.emit(CHILD_TELEMETRY_CHANNEL, envelope);
+				} catch {
+					/* telemetry is best-effort and must not disturb the run */
+				}
+			},
+		};
+	} catch {
+		return undefined;
+	}
+}
+
 export default function mxPiAgents(pi: ExtensionAPI) {
 	// Defense in depth: a marked child never registers the tool at all, so a
 	// child cannot delegate even if this extension were somehow loaded into it.
@@ -95,6 +298,7 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 	// make `<agentDir>/settings.json` resolve against `process.cwd()`, which is
 	// the target repository.
 	const agentDir = agentDirFromPath(configStore.path);
+	const overlay = new AgentProgressOverlay();
 	let config: AgentsConfig = { version: 1, agentPaths: [], approvals: {}, limits: {} };
 	let roster: PinnedAgent[] = [];
 	let diagnostics: AgentDiagnostic[] = [];
@@ -143,6 +347,7 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 			parentTools: pi.getActiveTools(),
 			availableTools: availableChildTools(),
 			limits: config.limits,
+			scopeCeiling: config.scope,
 			sandboxAvailable: isSandboxAvailable(),
 			isModelAvailable: (label) => {
 				const [provider, modelId] = label.includes("/") ? label.split("/", 2) : ["", label];
@@ -212,13 +417,214 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 		};
 	}
 
+	/**
+	 * Plan and run a delegation, shared by the `mx_pi_agent` tool and the `#`
+	 * input handler so the trust gate, hash re-verification, budgets and path
+	 * scope cannot drift between the two entry points.
+	 *
+	 * The trust gate is async, so every distinct agent is authorized up front and
+	 * the result is mapped back into the synchronous orchestrator `authorize`.
+	 */
+	async function runDelegation(
+		request: {
+			kind: "single" | "parallel" | "chain" | "pipeline";
+			steps?: DelegationStep[];
+			stages?: PipelineStage[];
+			task?: string;
+		},
+		ctx: ExtensionContext,
+		options: { signal: AbortSignal; onUpdate?: (results: RunResult[], total: number) => void },
+	): Promise<{ text: string; details: AgentToolDetails; cancelled?: boolean }> {
+		const orchestration = deps(ctx);
+		const steps = request.steps ?? [];
+		const stages = request.stages ?? [];
+		const names =
+			request.kind === "pipeline"
+				? [...new Set(stages.flatMap((stage) => [...stage.agents]))]
+				: [...new Set(steps.map((step) => step.agent))];
+
+		const refusalByAgent = new Map<string, string>();
+		for (const name of names) {
+			const agent = roster.find((candidate) => candidate.definition.name === name);
+			if (!agent) continue;
+			const decision = await authorize(agent, ctx);
+			if (!decision.ok) refusalByAgent.set(name, decision.refusal);
+		}
+		orchestration.authorize = (agent) => {
+			const refusal = refusalByAgent.get(agent.definition.name);
+			if (refusal === undefined) return { ok: true };
+			return {
+				ok: false,
+				refusal: { reason: "unapproved-project-agent", message: refusal, diagnostics: [] },
+			};
+		};
+
+		const total =
+			request.kind === "pipeline" ? stages.reduce((count, stage) => count + stage.agents.length, 0) : steps.length;
+		const runOptions = {
+			signal: options.signal,
+			now: () => Date.now(),
+			onUpdate: options.onUpdate ? (partial: RunResult) => options.onUpdate?.([partial], total) : undefined,
+			telemetry: createChildTelemetrySink(pi, ctx),
+		};
+
+		// Build the display model before anything runs, so the widget can list
+		// waiting agents while the first one is still starting.
+		const progressStages =
+			request.kind === "pipeline"
+				? stages.map((stage) => ({ agents: [...stage.agents] }))
+				: request.kind === "parallel"
+					? [{ agents: steps.map((step) => step.agent) }]
+					: steps.map((step) => ({ agents: [step.agent] }));
+		const model = createProgress(progressStages);
+		orchestration.onStep = (event) => {
+			if (event.phase === "start") markRunning(model, event.stage, event.agent);
+			else markSettled(model, event.stage, event.agent, event.ok === true);
+			overlay.refresh();
+		};
+		overlay.show(model);
+
+		let outcome: DelegationOutcome | undefined;
+		try {
+			outcome =
+				request.kind === "pipeline"
+					? await runPipeline(stages, request.task ?? "", orchestration, runOptions)
+					: request.kind === "parallel"
+						? await runParallel(steps, orchestration, runOptions)
+						: request.kind === "chain"
+							? await runChain(steps, orchestration, runOptions)
+							: await runSingle(steps[0], orchestration, runOptions);
+		} finally {
+			// Whatever is still waiting or running was stopped early; on an abort
+			// it was cancelled, otherwise it never got to start.
+			markRemaining(model, options.signal.aborted ? "cancelled" : "failed");
+			overlay.hide();
+		}
+
+		if (options.signal.aborted || outcome === undefined) {
+			const message = "Cancelled: the delegation was aborted.";
+			return {
+				text: message,
+				details: { mode: request.kind, results: [], diagnostics: [], refusalReason: message },
+				cancelled: true,
+			};
+		}
+
+		const redact = createRedactor(process.env);
+		const capped = aggregateResults(outcome.results, {
+			perResultBytes: DEFAULT_PER_RESULT_BYTES,
+			totalBytes: DEFAULT_TOTAL_BYTES,
+		});
+		// A refusal that happened before any session exists has no results to
+		// render, so the refusal text itself is the whole result.
+		const refusalText = outcome.refusal !== undefined ? describeRefusal(outcome.refusal) : "";
+		const text = redact(capped.text.length > 0 ? capped.text : refusalText);
+		const details: AgentToolDetails = {
+			mode: outcome.mode,
+			results: outcome.results,
+			diagnostics: outcome.diagnostics,
+			refusalReason: outcome.refusal?.message,
+		};
+		return { text, details };
+	}
+
+	pi.registerMessageRenderer(
+		DIRECTIVE_MESSAGE,
+		(message, _options, theme) => new Text(renderDirectiveMessage(message, theme).join("\n"), 0, 0),
+	);
+
 	pi.on("session_start", async (_event, ctx) => {
 		pin(ctx);
+		overlay.setUICtx(ctx.ui);
 		for (const diagnostic of diagnostics) {
 			if (diagnostic.level === "warning") ctx.ui.notify(`mx-pi-agents: ${diagnostic.message}`, "warning");
 		}
 		if (pi.getFlag("mx-pi-agents-list") === true) {
 			ctx.ui.notify(renderRosterLines(rosterEntries(roster), ctx.ui.theme).join("\n"), "info");
+		}
+		if (ctx.mode === "tui") {
+			try {
+				ctx.ui.addAutocompleteProvider((current) => createDirectiveAutocomplete(current, () => roster));
+			} catch {
+				/* no autocomplete in this environment; directives still work */
+			}
+		}
+	});
+
+	pi.on("session_shutdown", async () => {
+		overlay.dispose();
+	});
+
+	pi.on("input", async (event, ctx) => {
+		try {
+			if (pi.getFlag("mx-pi-agents-disable") === true) return { action: "continue" as const };
+			if (event.source !== "interactive") return { action: "continue" as const };
+
+			const parsed = parseDirective(event.text);
+			if (parsed === undefined) return { action: "continue" as const };
+			if (!parsed.ok) {
+				ctx.ui.notify(`mx-pi-agents: ${parsed.message}`, "warning");
+				return { action: "handled" as const };
+			}
+			if ((event.images?.length ?? 0) > 0) {
+				ctx.ui.notify("mx-pi-agents: directives cannot carry attached images.", "warning");
+				return { action: "handled" as const };
+			}
+			if (event.streamingBehavior !== undefined) {
+				ctx.ui.notify("mx-pi-agents: wait for the current turn before running a directive.", "warning");
+				return { action: "handled" as const };
+			}
+
+			const directive = parsed.directive;
+			const controller = new AbortController();
+			let unsubscribe: (() => void) | undefined;
+			try {
+				unsubscribe = ctx.ui.onTerminalInput?.((data) => {
+					try {
+						if (matchesKey(data, "escape")) {
+							controller.abort();
+							return { consume: true };
+						}
+					} catch {
+						/* not a key we handle */
+					}
+					return undefined;
+				});
+			} catch {
+				unsubscribe = undefined;
+			}
+			try {
+				const single = directive.stages.length === 1 && directive.stages[0].agents.length === 1;
+				const request = single
+					? { kind: "single" as const, steps: [{ agent: directive.stages[0].agents[0], task: directive.task }] }
+					: {
+							kind: "pipeline" as const,
+							stages: directive.stages.map((stage) => ({ agents: stage.agents })),
+							task: directive.task,
+						};
+				const { text, details, cancelled } = await runDelegation(request, ctx, { signal: controller.signal });
+				pi.sendMessage(
+					{ customType: DIRECTIVE_MESSAGE, content: text, display: true, details },
+					{ triggerTurn: cancelled !== true },
+				);
+			} finally {
+				try {
+					unsubscribe?.();
+				} catch {
+					/* a disposing session must not crash the handler */
+				}
+			}
+			return { action: "handled" as const };
+		} catch (err) {
+			try {
+				ctx.ui.notify(
+					`mx-pi-agents: directive failed: ${err instanceof Error ? err.message : String(err)}`,
+					"error",
+				);
+			} catch {
+				/* ignore */
+			}
+			return { action: "handled" as const };
 		}
 	});
 
@@ -227,11 +633,25 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 		label: "mx_pi_agent",
 		description: [
 			"Delegate a task to a named agent with an explicit capability grant.",
+			"A child can only touch paths inside the run scope (the cwd by default); an out-of-scope read, write or search is refused.",
 			"Modes: single ({agent, task}), parallel ({tasks: [...]}, max 8), chain ({chain: [...]}, {previous} substitution).",
 			"Agents come from the pinned registry; project agents require approval.",
 		].join(" "),
 		parameters: DEFAULT_PARAMS,
 		executionMode: "parallel",
+		// 0.99 tool metadata: permission extensions can gate `mx_pi_agent` on these
+		// hints. A child may write files and run bash, so the call is neither
+		// read-only nor closed-world.
+		annotations: {
+			readOnlyHint: false,
+			destructiveHint: true,
+			idempotentHint: false,
+			openWorldHint: true,
+		},
+		namespace: {
+			name: "mx-pi-agents",
+			description: "Secure agent delegation",
+		},
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			if (pi.getFlag("mx-pi-agents-disable") === true) {
@@ -275,70 +695,25 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 			}
 
 			const abort = signal ?? new AbortController().signal;
-			const orchestration = deps(ctx);
-			// The trust gate is async, so authorize up front for every distinct agent.
-			const names = [...new Set(steps.map((step) => step.agent))];
-			const refusalByAgent = new Map<string, string>();
-			for (const name of names) {
-				const agent = roster.find((candidate) => candidate.definition.name === name);
-				if (!agent) continue;
-				const decision = await authorize(agent, ctx);
-				if (!decision.ok) refusalByAgent.set(name, decision.refusal);
-			}
-			orchestration.authorize = (agent) => {
-				const refusal = refusalByAgent.get(agent.definition.name);
-				if (refusal === undefined) return { ok: true };
-				return {
-					ok: false,
-					refusal: { reason: "unapproved-project-agent", message: refusal, diagnostics: [] },
-				};
-			};
-
-			const progress = (results: RunResult[]) => {
-				onUpdate?.({
-					content: [{ type: "text", text: `${results.length}/${steps.length} step(s) settled` }],
-					details: {
-						mode,
-						results,
-						diagnostics: orchestration.context.limits ? [] : [],
-						refusalReason: undefined,
-					} satisfies AgentToolDetails,
-				});
-			};
-			const options = {
+			const { text, details } = await runDelegation({ kind: mode, steps }, ctx, {
 				signal: abort,
-				now: () => Date.now(),
-				onUpdate: (partial: RunResult) => progress([partial]),
-			};
-
-			const outcome =
-				mode === "parallel"
-					? await runParallel(steps, orchestration, options)
-					: mode === "chain"
-						? await runChain(steps, orchestration, options)
-						: await runSingle(steps[0], orchestration, options);
-
-			const redact = createRedactor(process.env);
-			const capped = aggregateResults(outcome.results, {
-				perResultBytes: DEFAULT_PER_RESULT_BYTES,
-				totalBytes: DEFAULT_TOTAL_BYTES,
+				onUpdate: (results, total) =>
+					onUpdate?.({
+						content: [{ type: "text", text: `${results.length}/${total} step(s) settled` }],
+						details: {
+							mode,
+							results,
+							diagnostics: [],
+							refusalReason: undefined,
+						} satisfies AgentToolDetails,
+					}),
 			});
-			// A refusal that happened before any session exists has no results to
-			// render, so the refusal text itself is the whole tool result.
-			const refusalText = outcome.refusal !== undefined ? describeRefusal(outcome.refusal) : "";
-			const text = redact(capped.text.length > 0 ? capped.text : refusalText);
-			const details: AgentToolDetails = {
-				mode: outcome.mode,
-				results: outcome.results,
-				diagnostics: outcome.diagnostics,
-				refusalReason: outcome.refusal?.message,
-			};
 
-			const failed = outcome.results.some((result) => !result.ok);
+			const failed = details.results.some((result) => !result.ok);
 			return {
 				content: [{ type: "text" as const, text: text.length > 0 ? text : "(no output)" }],
 				details,
-				...(failed || outcome.refusal !== undefined ? { isError: true } : {}),
+				...(failed || details.refusalReason !== undefined ? { isError: true } : {}),
 			};
 		},
 
@@ -382,12 +757,16 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 
 				case "status": {
 					const sandbox = isSandboxAvailable() ? "available" : "unavailable";
+					const scope = config.scope !== undefined && config.scope.length > 0 ? config.scope.join(", ") : "(cwd)";
+					const unconfined = config.scope?.some((root) => root === "/") ? "allowed" : "refused";
 					const lines = [
 						`config: ${configStore.path}`,
 						`agents: ${roster.length} (${gatedAgents(roster).length} gated)`,
 						`agentPaths: ${config.agentPaths.length > 0 ? config.agentPaths.join(", ") : "(none)"}`,
 						`bundled: ${bundledAgentsDir()}`,
 						`limits: ${JSON.stringify(config.limits)}`,
+						`scope: ${scope}`,
+						`unconfined runs: ${unconfined}`,
 						`sandbox: os ${sandbox}`,
 					];
 					ctx.ui.notify(lines.join("\n"), "info");

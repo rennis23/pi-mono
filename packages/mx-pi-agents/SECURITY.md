@@ -33,7 +33,7 @@ own security documentation.
 | B1 | cloned repo → parent session | `.pi/settings.json`, `.pi/skills`, `.pi/agents`, symlinks | child sessions load **none** of it; project agents gated by approval + hash |
 | B2 | parent session → child | agent definition, task text, grants | grants computed fail-closed; task via stdin; no shell anywhere |
 | B3 | child → parent | child output, usage, errors | capped, parsed as data, returned only as a tool result; no auto-triggered turns |
-| B4 | child → host OS | granted tools (`bash`, `write`, …) | pi-parity: capability grants only, documented; optional `sandbox: os` for bash |
+| B4 | child → host OS | granted tools (`bash`, `write`, …) | file tools path-confined to the run scope (invariant 11); unsandboxed `bash`/subprocess refused unless the ceiling is `/`; optional `sandbox: os` for bash |
 | B5 | definition file on disk → run | mid-session file edits | definitions pinned at `session_start`; hash re-verified at run time |
 
 ---
@@ -85,24 +85,70 @@ Additional fail-closed rules:
 
 ### B3 — child output is data
 
-- Results are returned as a tool result only. The extension never calls
-  `pi.sendMessage` or `pi.sendUserMessage`, so a completed child cannot trigger a
-  parent turn and cannot cross a session boundary.
+- `mx_pi_agent` results are returned as a tool result only, so a completed child
+  cannot trigger a parent turn and cannot cross a session boundary.
+- The one caller that does deliver a message is the user-initiated `#` directive.
+  It runs through the same `planRun` path (trust gate, hash re-verification,
+  budgets, path scope), and only `source: "interactive"` input is intercepted;
+  RPC and extension-injected input can never reach it. A directive is a new
+  caller of the existing run path, not a new capability.
 - Output is capped per result (32 KiB) and in aggregate (128 KiB), with an
   explicit truncation marker.
 - Output is redacted for credential-shaped values from the environment before it
   is returned.
+- Child telemetry (see below) is a publish-only channel on `pi.events`; it is not
+  a second delivery path. Envelopes are never appended to the parent transcript,
+  never trigger a turn, and are dropped when nothing subscribes.
 
-### B4 — pi parity for granted tools
+### Child telemetry
 
-A granted tool behaves exactly like pi's version of that tool. Safety comes from
-capability grants, the trust gate, budgets and session hygiene — not from hidden
-path confinement or approval dialogs. See §3 for what this does not cover.
+Delegated agents run in child sessions that load no extensions, so a parent
+session tracer cannot observe them. To close that gap without weakening B1, each
+child loads exactly one **inline** extension constructed in-process by the runner
+(inline factories bypass `noExtensions`, but nothing here is discovered from
+disk) that re-publishes the child's lifecycle events on `pi.events`. It
+registers no tools, so the child's grant set is unchanged, and it is a pure
+observer: it returns nothing and mutates nothing, so it cannot alter the child's
+run.
+
+Residual: the payload is the child's raw extension events, which include
+provider request payloads and assistant messages. Any extension loaded in the
+parent session can subscribe. Extensions already execute arbitrary in-process
+code, so this is not an escalation, but the audience for prompt/tool data widens
+from the parent extension alone to all loaded extensions. Nothing is captured
+unless a consumer subscribes, and nothing is written to disk. The subprocess
+runner is a separate process and publishes nothing.
+
+### B4 — granted file tools are path-confined to the run scope
+
+A granted file tool (`read`, `write`, `edit`, `grep`, `find`, `ls`) is built by
+pi's own factory and wrapped so its path argument is checked against the run
+scope before pi's implementation runs. An out-of-scope read, write or search is
+refused; an absent or empty path means the run's cwd, never "unbounded".
+`grep`/`find` confine the search *root* — their operations never see it, which is
+why enforcement is at `ToolDefinition.execute` rather than the operations hook.
+
+Scope model:
+
+- Default scope is `[cwd]`. There is no implicit ancestor, `$HOME`, temp dir or
+  agent dir.
+- The config `scope` is a ceiling. A definition's `scope` tightens it, never
+  loosens it. `scope: []` is a refusal, an ancestor of cwd is a refusal, and an
+  entry outside the ceiling or one that does not resolve to a directory is a
+  refusal.
+- A vector that cannot be path-confined — unsandboxed `bash`, or
+  `isolation: subprocess` — is refused (`scope-unenforceable`) unless the ceiling
+  is an explicit `/`. That single typed declaration is the only way to license an
+  unconfined run.
+- Containment reuses `isPathContained` (`src/security.ts`), which resolves `..`,
+  absolute escapes and symlink escapes through the nearest-existing realpath and
+  fails closed on a missing root.
 
 `sandbox: os` is an opt-in per-agent wrapper for the `bash` tool only:
-`sandbox-exec` with a generated seatbelt profile on macOS, `bwrap` on Linux
-(write inside the working directory and temp dir only, network denied). If no
-backend is available the run is **refused**, never silently unsandboxed.
+`sandbox-exec` with a generated seatbelt profile on macOS, `bwrap` on Linux. It
+reads only the run scope plus an immutable system runtime allowance and writes
+only under the run scope; network is denied. If no backend is available the run
+is **refused**, never silently unsandboxed.
 
 ### B5 — definitions are pinned
 
@@ -138,14 +184,20 @@ assume:
 - **Prompt injection.** A child that reads attacker-controlled text can be
   influenced by it. Grants limit what the model can *do*; they do not make it
   *uninfluenced*. This is inherent to using an LLM.
-- **Granted `bash` is a full shell.** `bash` with `sandbox: none` can read and
-  write anything the operator can, subject only to budgets. Grant it only to
-  agents whose definitions you trust. `sandbox: os` narrows this to the working
-  directory, but it is a coarse, opt-in control — not a security boundary for
-  arbitrary code.
-- **Path scope is not enforced.** A granted `read`/`write`/`edit` can touch any
-  path the process can, including outside the working directory. pi has no
-  path-confinement layer, and this extension does not add one.
+- **Granted `bash` is a full shell.** Under the default ceiling, `bash` with
+  `sandbox: none` is refused (`scope-unenforceable`) rather than pretended to be
+  confined. `sandbox: os` narrows it to the run scope plus the system runtime
+  allowance, but it is a coarse, opt-in control — not a security boundary for
+  arbitrary code. Only an explicit `/` ceiling lets an unsandboxed shell run.
+- **Path scope is enforced for the tools this extension supplies, and nowhere
+  else.** A granted file tool cannot touch a path outside its run scope
+  (invariant 11). The named exceptions are: (a) a run licensed by an explicit `/`
+  ceiling, where unsandboxed `bash` or `isolation: subprocess` runs with the
+  operator's full filesystem access and a definition-declared narrow scope is
+  refused rather than ignored; (b) inside `sandbox: os`, the immutable macOS
+  system runtime paths (the dynamic loader and `/usr`, `/bin`, `/sbin`, `/dev`,
+  `/etc`) stay readable — user data outside the run scope does not; (c) a granted
+  `bash` can still attempt anything the sandbox permits.
 - **Network egress is not enforced** except inside `sandbox: os`.
 - **Approval is a decision, not a sandbox.** Approving a project agent means "I
   reviewed this definition at this hash". It does not restrict what that
@@ -188,7 +240,14 @@ assume:
 | Spawn-capable tools refused, not stripped | Silently removing a grant hides an authoring mistake; refusing makes it visible. |
 | Task over stdin, prompt via temp file | `argv` is world-readable via `ps` and has a hard length limit. |
 | No background runs in v1 | Completion delivery that can cross sessions or auto-trigger turns is a confused-deputy risk; deferred to a design that keeps delivery session-scoped. |
+| `#` directives reuse the tool's plan/run path | A directive is a second caller, not a second capability: it reaches a child only through `planRun`, and only interactive input is intercepted. The synchronous, interactive-only handler keeps delivery session-scoped. |
+| Child telemetry rides `pi.events`, not the transcript | A tracer needs the child's events, not its output. Publishing on the shared extension bus keeps B3 intact (no turn, no transcript entry, no session boundary crossed) and needs no changes to the child's isolation: the emitter is an in-process inline extension, so B1 still holds. |
 | `sandbox: os` refuses when unavailable | A sandbox that silently degrades to unsandboxed execution is worse than no sandbox, because it is trusted. |
+| Default scope is `[cwd]` | A missing declaration must mean the run's own directory, never "everything". Absent and empty stay distinct: absent is cwd, `scope: []` is a refusal. |
+| A vector that cannot be path-confined is refused | Unsandboxed `bash` and `isolation: subprocess` have no hook this extension can check, so the run is refused (`scope-unenforceable`) unless the operator types the explicit `/` ceiling. Pretending to confine them would make invariant 11 false. |
+| A `/` ceiling overrides the cwd default only for unconfineable vectors | It is the one typed "unrestricted" declaration. A definition-declared narrow scope combined with an unconfineable vector is still refused: a definition may tighten, never loosen. |
+| macOS read narrowing uses the `system.sb` import plus the run scope | Hand-listing runtime paths (`/usr`, `/System`, dyld, …) aborts bash: seatbelt needs the rest of the system runtime surface. `system.sb` grants process startup but not user data, so reads outside the run scope (`$HOME`, `~/.pi`, another project, a temp dir) stay denied. |
+| Enforcement at `ToolDefinition.execute`, not the operations hook | pi's `GrepOperations`/`FindOperations` never receive the model-supplied search root, so wrapping operations cannot confine grep/find. `execute` sees every raw argument; an unrecognized shape is refused, never passed through. |
 | Child settings manager refuses an empty agent dir | `join("", "settings.json")` resolves against `process.cwd()`. Found during the hardening review: the runner was constructed with `agentDir: ""`, which would have read the target repository's settings. The manager now throws instead of resolving, and `index.ts` threads a single resolved dir everywhere. Regression tests: `src/security.test.ts` (invariant 1) and `src/runners/in-process.test.ts`. |
 
 ---
@@ -206,9 +265,11 @@ sandbox: os
 
 - macOS: requires `/usr/bin/sandbox-exec` (present on stock macOS).
 - Linux: requires `bwrap` (bubblewrap) on `PATH`.
-- The sandbox allows reads broadly (a child that cannot read the source tree is
-  useless) and writes only under the working directory and the temp dir. Network
-  is denied.
+- The sandbox reads the system runtime allowance and the run scope, and writes
+  only under the run scope. Network is denied. On macOS the allowance is the
+  built-in `system.sb` profile plus `/usr`, `/bin` and `/sbin`; user data outside
+  the run scope is denied. On Linux the allowlisted system roots are `--ro-bind`
+  read-only and the run scope is bind-mounted writable.
 - `/mx-pi-agents status` reports whether a backend is available.
 - If no backend is available, any run requesting `sandbox: os` is refused with
   `sandbox-unavailable`.

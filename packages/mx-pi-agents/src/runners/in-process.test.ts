@@ -15,7 +15,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunPlan } from "../types.js";
 import {
 	createChildResourceLoader,
@@ -23,6 +23,11 @@ import {
 	createInProcessRunner,
 	PROJECT_SCOPED_SETTINGS_KEYS,
 } from "./in-process.js";
+
+// This suite builds real `AgentSession`s. On a cold install the first session
+// lazily compiles SDK modules and can exceed the 5s default under parallel
+// transform load, although the same body runs in milliseconds warm.
+vi.setConfig({ testTimeout: 20_000 });
 
 let root: string;
 let agentDir: string;
@@ -178,6 +183,19 @@ describe("createChildResourceLoader", () => {
 		expect(loader.getSystemPrompt()).toBe("SYSTEM_PROMPT_MARKER");
 	});
 
+	it("loads an inline extension factory even with discovery disabled", async () => {
+		// Inline factories bypass `noExtensions`; this is the seam child telemetry
+		// uses. The factory is constructed in-process, never discovered from disk.
+		const loader = createChildResourceLoader(agentDir, "prompt", {
+			extensionFactories: [() => undefined],
+		});
+		await loader.reload();
+		const extensions = loader.getExtensions().extensions;
+		expect(extensions).toHaveLength(1);
+		expect(extensions[0].path).toContain("inline");
+		expect(loader.getExtensions().errors).toEqual([]);
+	});
+
 	it("does not read the target repository even when it is the cwd", async () => {
 		// The loader is constructed with the agent dir as cwd; this asserts the
 		// hostile repo is genuinely invisible rather than merely unread.
@@ -301,6 +319,7 @@ describe("runInProcess refusal paths (no model call)", () => {
 		isolation: "process",
 		sandbox: "none",
 		cwd: targetRepo,
+		scope: { roots: [targetRepo], unrestricted: false },
 		diagnostics: [],
 		...overrides,
 	});

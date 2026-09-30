@@ -114,6 +114,11 @@ export function isPathContained(root: string, candidate: string): boolean {
 	if (!existsSync(root)) return false;
 	const realRoot = realPathOfNearestExisting(root);
 	const realCandidate = realPathOfNearestExisting(candidate);
+	// The filesystem root is the one root whose realpath has no trailing
+	// separator to match on; `"/etc".startsWith("//")` is false, so it needs
+	// its own case or `["/"]` (the explicit unrestricted scope) would refuse
+	// every path.
+	if (realRoot === sep) return true;
 	return realCandidate === realRoot || realCandidate.startsWith(realRoot + sep);
 }
 

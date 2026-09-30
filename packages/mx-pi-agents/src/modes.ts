@@ -9,6 +9,7 @@
  */
 
 import { MAX_CONCURRENCY, mapWithConcurrencyLimit, normalizeConcurrency, taskCountError } from "./concurrency.js";
+import { MAX_PIPELINE_STAGES } from "./directive.js";
 import { describeRefusal, planRun, type SessionContext } from "./policy.js";
 import { verifyPinned } from "./registry.js";
 import type { AgentDiagnostic, PinnedAgent, Refusal, Runner, RunOptions, RunPlan, RunResult } from "./types.js";
@@ -17,6 +18,16 @@ import type { AgentDiagnostic, PinnedAgent, Refusal, Runner, RunOptions, RunPlan
 export interface DelegationStep {
 	agent: string;
 	task: string;
+}
+
+/** Display-only progress event emitted around every executed step. */
+export interface StepEvent {
+	phase: "start" | "settle";
+	/** Zero-based sequential stage the step belongs to. */
+	stage: number;
+	agent: string;
+	/** Set on `settle`: whether the step finished successfully. */
+	ok?: boolean;
 }
 
 /** Everything the orchestrator needs besides the steps themselves. */
@@ -33,11 +44,18 @@ export interface OrchestratorDeps {
 	concurrency?: number;
 	/** Called before each step so the caller can apply the trust gate. */
 	authorize?: (agent: PinnedAgent) => { ok: true } | { ok: false; refusal: Refusal };
+	/** Display-only hook: called as each step starts and settles. */
+	onStep?: (event: StepEvent) => void;
+}
+
+/** One stage of a `#` pipeline. More than one agent means a parallel group. */
+export interface PipelineStage {
+	agents: readonly string[];
 }
 
 /** Result of a whole delegation call. */
 export interface DelegationOutcome {
-	mode: "single" | "parallel" | "chain";
+	mode: "single" | "parallel" | "chain" | "pipeline";
 	results: RunResult[];
 	/** Set when the run stopped early (chain failure, refusal, cap). */
 	stoppedAt: number | undefined;
@@ -129,6 +147,20 @@ function failureResult(agent: string, refusal: Refusal): RunResult {
 	return { ...refusalResult(refusal), agent };
 }
 
+/** Run one planned step, reporting start/settle to the progress hook. */
+async function runObserved(
+	step: DelegationStep,
+	plan: RunPlan,
+	stage: number,
+	deps: OrchestratorDeps,
+	options: RunOptions,
+): Promise<RunResult> {
+	deps.onStep?.({ phase: "start", stage, agent: step.agent });
+	const result = await runStep(plan, deps, options);
+	deps.onStep?.({ phase: "settle", stage, agent: step.agent, ok: result.ok });
+	return result;
+}
+
 /** Single delegation: one agent, one task. */
 export async function runSingle(
 	step: DelegationStep,
@@ -145,7 +177,7 @@ export async function runSingle(
 			refusal: planned.refusal,
 		};
 	}
-	const result = await runStep(planned.plan, deps, options);
+	const result = await runObserved(step, planned.plan, 0, deps, options);
 	return {
 		mode: "single",
 		results: [result],
@@ -180,7 +212,7 @@ export async function runParallel(
 			}
 			diagnostics.push(...planned.plan.diagnostics);
 			// allSettled: a failed step never rejects the whole call.
-			return runStep(planned.plan, deps, options);
+			return runObserved(step, planned.plan, 0, deps, options);
 		},
 		options.signal,
 	);
@@ -209,7 +241,7 @@ export async function runChain(
 		}
 		diagnostics.push(...planned.plan.diagnostics);
 
-		const result = await runStep(planned.plan, deps, options);
+		const result = await runObserved({ agent: step.agent, task }, planned.plan, index, deps, options);
 		results.push(result);
 		if (!result.ok) {
 			return { mode: "chain", results, stoppedAt: index, diagnostics, refusal: undefined };
@@ -218,6 +250,103 @@ export async function runChain(
 	}
 
 	return { mode: "chain", results, stoppedAt: undefined, diagnostics, refusal: undefined };
+}
+
+/**
+ * Join a parallel stage's results into the text the next stage receives.
+ * Successful results only, each labelled with its agent name.
+ */
+function combineStageResults(results: readonly RunResult[]): string {
+	const successful = results.filter((result) => result.ok);
+	return successful.map((result) => `--- ${result.agent} ---\n${result.text}`).join("\n\n");
+}
+
+/**
+ * Pipeline delegation: sequential stages, parallel groups inside a stage,
+ * cascade `{previous}` substitution, fail-fast on a stage failure.
+ *
+ * Stage 1 runs the caller's task; every later stage runs `{previous}`, which
+ * is replaced with the prior stage's combined output. A refusal or a failure
+ * stops the pipeline and is reported with `stoppedAt`.
+ */
+export async function runPipeline(
+	stages: readonly PipelineStage[],
+	task: string,
+	deps: OrchestratorDeps,
+	options: RunOptions,
+): Promise<DelegationOutcome> {
+	const diagnostics: AgentDiagnostic[] = [];
+	const results: RunResult[] = [];
+
+	if (!Number.isInteger(stages.length) || stages.length < 1 || stages.length > MAX_PIPELINE_STAGES) {
+		const refusal: Refusal = {
+			reason: "invalid-request",
+			message: `invalid pipeline: expected 1..${MAX_PIPELINE_STAGES} stages, got ${stages.length}.`,
+			diagnostics: [],
+		};
+		return { mode: "pipeline", results: [], stoppedAt: undefined, diagnostics: [], refusal };
+	}
+
+	for (const stage of stages) {
+		const capError = taskCountError(stage.agents.length);
+		if (capError !== undefined) {
+			const refusal: Refusal = {
+				reason: "invalid-request",
+				message: `invalid pipeline stage: ${capError}`,
+				diagnostics: [],
+			};
+			return { mode: "pipeline", results, stoppedAt: undefined, diagnostics, refusal };
+		}
+	}
+
+	let previous = "";
+	for (let index = 0; index < stages.length; index++) {
+		const stage = stages[index];
+		const rawTask = index === 0 ? task : "{previous}";
+		const stageTask = rawTask.replace(/\{previous\}/g, previous);
+
+		if (stage.agents.length === 1) {
+			const agent = stage.agents[0];
+			const planned = planStep({ agent, task: stageTask }, deps);
+			if (!planned.ok) {
+				diagnostics.push(...planned.refusal.diagnostics);
+				results.push(failureResult(agent, planned.refusal));
+				return { mode: "pipeline", results, stoppedAt: index, diagnostics, refusal: planned.refusal };
+			}
+			diagnostics.push(...planned.plan.diagnostics);
+
+			const result = await runObserved({ agent, task: stageTask }, planned.plan, index, deps, options);
+			results.push(result);
+			if (!result.ok) {
+				return { mode: "pipeline", results, stoppedAt: index, diagnostics, refusal: undefined };
+			}
+			previous = result.text;
+			continue;
+		}
+
+		// Parallel group: bounded fan-out, allSettled inside the stage.
+		const groupResults = await mapWithConcurrencyLimit(
+			stage.agents,
+			normalizeConcurrency(deps.concurrency),
+			async (agent) => {
+				const planned = planStep({ agent, task: stageTask }, deps);
+				if (!planned.ok) {
+					diagnostics.push(...planned.refusal.diagnostics);
+					return failureResult(agent, planned.refusal);
+				}
+				diagnostics.push(...planned.plan.diagnostics);
+				return runObserved({ agent, task: stageTask }, planned.plan, index, deps, options);
+			},
+			options.signal,
+		);
+		results.push(...groupResults);
+		if (groupResults.every((result) => !result.ok)) {
+			return { mode: "pipeline", results, stoppedAt: index, diagnostics, refusal: undefined };
+		}
+		previous = combineStageResults(groupResults);
+	}
+
+	return { mode: "pipeline", results, stoppedAt: undefined, diagnostics, refusal: undefined };
 }
 
 /** Substitute `{previous}` in a chain step's task for display purposes. */

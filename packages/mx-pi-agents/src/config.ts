@@ -35,6 +35,13 @@ export interface AgentsConfig {
 	version: number;
 	/** Extra directories to search for definitions (gated). */
 	agentPaths: string[];
+	/**
+	 * Scope ceiling: the maximum directory roots any run may reach. Absent means
+	 * `[cwd]`. An agent's `scope` may tighten this list, never loosen it, and
+	 * only an explicit `/` licenses an unconfineable run. Resolved against the
+	 * config directory exactly like `agentPaths`.
+	 */
+	scope?: string[];
 	/** Approval ledger: real dir → file name → approved hash. */
 	approvals: ApprovalLedger;
 	/** Config ceilings. An agent may tighten these, never loosen them. */
@@ -83,6 +90,7 @@ export function parseConfig(raw: unknown, diagnostics: AgentDiagnostic[]): Agent
 	}
 
 	config.agentPaths = parseAgentPaths(raw.agentPaths, diagnostics);
+	config.scope = parseScope(raw.scope, diagnostics);
 	config.approvals = parseApprovals(raw.approvals, diagnostics);
 	config.limits = parseLimits(raw.limits, diagnostics);
 	return config;
@@ -98,6 +106,23 @@ function parseAgentPaths(raw: unknown, diagnostics: AgentDiagnostic[]): string[]
 	for (const entry of raw) {
 		if (typeof entry !== "string" || entry.trim().length === 0) {
 			diagnostics.push({ level: "warning", message: "config agentPaths contains a non-string entry; ignored" });
+			continue;
+		}
+		paths.push(entry.trim());
+	}
+	return paths;
+}
+
+function parseScope(raw: unknown, diagnostics: AgentDiagnostic[]): string[] | undefined {
+	if (raw === undefined) return undefined;
+	if (!Array.isArray(raw)) {
+		diagnostics.push({ level: "warning", message: "config scope is not a list; ignored" });
+		return undefined;
+	}
+	const paths: string[] = [];
+	for (const entry of raw) {
+		if (typeof entry !== "string" || entry.trim().length === 0) {
+			diagnostics.push({ level: "warning", message: "config scope contains a non-string entry; ignored" });
 			continue;
 		}
 		paths.push(entry.trim());
@@ -173,7 +198,13 @@ export function serializeConfig(config: AgentsConfig): string {
 	if (config.limits.tokenBudget !== undefined) limits.tokenBudget = config.limits.tokenBudget;
 	if (config.limits.costBudget !== undefined) limits.costBudget = config.limits.costBudget;
 	return `${JSON.stringify(
-		{ version: CONFIG_VERSION, agentPaths: config.agentPaths, approvals, limits },
+		{
+			version: CONFIG_VERSION,
+			agentPaths: config.agentPaths,
+			...(config.scope !== undefined ? { scope: config.scope } : {}),
+			approvals,
+			limits,
+		},
 		null,
 		"\t",
 	)}\n`;
@@ -211,6 +242,7 @@ export function createConfigStore(agentDir?: string): ConfigStore {
 				const config = parseConfig(raw, diagnostics);
 				const baseDir = dirname(path);
 				config.agentPaths = config.agentPaths.map((entry) => resolveAgentPath(entry, baseDir));
+				config.scope = config.scope?.map((entry) => resolveAgentPath(entry, baseDir));
 				return { config, diagnostics };
 			} catch (err) {
 				diagnostics.push({

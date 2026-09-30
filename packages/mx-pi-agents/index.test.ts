@@ -10,9 +10,62 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import mxPiAgents from "./index.js";
+import { CHILD_TELEMETRY_CHANNEL } from "./src/telemetry.js";
 import { createHarness, type Harness, mockTheme } from "./test/harness.js";
+
+// The runner is stubbed for the whole file: no test here creates a real SDK
+// session, and the directive suite needs a deterministic successful result.
+const inProcessState = vi.hoisted(() => ({
+	plans: [] as Array<{ agentName: string; task: string }>,
+	/** Optional per-run gate so a test can inspect the UI mid-flight. */
+	beforeRun: undefined as
+		| undefined
+		| ((plan: { agentName: string; task: string }, index: number) => Promise<void> | void),
+	/** Telemetry sinks handed to the runner, in call order. */
+	telemetry: [] as Array<
+		{ delegationId: string; parentSessionId: string; emit: (envelope: unknown) => void } | undefined
+	>,
+}));
+
+vi.mock("./src/runners/in-process.js", () => ({
+	createInProcessRunner: () => ({
+		kind: "process",
+		run: async (
+			plan: { agentName: string; task: string },
+			options?: { telemetry?: { delegationId: string; parentSessionId: string; emit: (envelope: unknown) => void } },
+		) => {
+			const index = inProcessState.plans.length;
+			inProcessState.plans.push({ agentName: plan.agentName, task: plan.task });
+			inProcessState.telemetry.push(options?.telemetry);
+			// Stand in for the child's inline telemetry extension: publish one event.
+			options?.telemetry?.emit({
+				delegationId: options.telemetry.delegationId,
+				parentSessionId: options.telemetry.parentSessionId,
+				runId: `run-${index}`,
+				agent: plan.agentName,
+				type: "message_end",
+				event: { type: "message_end" },
+			});
+			if (inProcessState.beforeRun) await inProcessState.beforeRun(plan, index);
+			return {
+				agent: plan.agentName,
+				ok: true,
+				partial: false,
+				stopped: undefined,
+				text: `handled:${plan.task}`,
+				truncated: false,
+				durationMs: 1,
+				turns: 1,
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0 },
+				stopReason: "end",
+				errorMessage: undefined,
+				diagnostics: [],
+			};
+		},
+	}),
+}));
 
 let root: string;
 let agentDir: string;
@@ -40,6 +93,9 @@ beforeEach(() => {
 	// lands in the temp dir instead of the developer's real ~/.pi.
 	previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
+	inProcessState.plans.length = 0;
+	inProcessState.beforeRun = undefined;
+	inProcessState.telemetry.length = 0;
 
 	harness = createHarness({ cwd, activeTools: ["read", "grep", "bash"] });
 	mxPiAgents(harness.pi);
@@ -266,13 +322,29 @@ describe("gated agent approval", () => {
 });
 
 describe("/mx-pi-agents command", () => {
-	it("status reports config path, counts and sandbox availability", async () => {
+	it("status reports config path, counts, sandbox availability and scope", async () => {
 		await start();
 		await harness.runCommand("status");
 		const text = harness.notificationText();
 		expect(text).toContain("config:");
 		expect(text).toContain("agents:");
+		expect(text).toContain("scope:");
+		expect(text).toContain("unconfined runs: refused");
 		expect(text).toContain("sandbox: os");
+	});
+
+	it("status shows the configured scope ceiling and whether unconfined runs are allowed", async () => {
+		const extensions = join(agentDir, "extensions");
+		mkdirSync(extensions, { recursive: true });
+		writeFileSync(
+			join(extensions, "mx-pi-agents.json"),
+			`${JSON.stringify({ version: 1, agentPaths: [], approvals: {}, limits: {}, scope: ["/"] }, null, "\t")}\n`,
+		);
+		await start();
+		await harness.runCommand("status");
+		const text = harness.notificationText();
+		expect(text).toContain("scope: /");
+		expect(text).toContain("unconfined runs: allowed");
 	});
 
 	it("refresh re-pins the roster", async () => {
@@ -360,5 +432,305 @@ describe("renderers", () => {
 		expect(lines).toContain("explorer");
 		expect(lines).toContain("3 turns");
 		expect(lines).toContain("found it");
+	});
+});
+
+describe("# directive input handler", () => {
+	async function emitInput(payload: Record<string, unknown>): Promise<unknown> {
+		return harness.emit("input", { source: "interactive", ...payload });
+	}
+
+	it("runs a single agent, appends a custom message and triggers a turn", async () => {
+		await start();
+		const result = await emitInput({ text: "#explorer find the config" });
+
+		expect(result).toEqual({ action: "handled" });
+		expect(inProcessState.plans).toEqual([{ agentName: "explorer", task: "find the config" }]);
+		expect(harness.messages).toHaveLength(1);
+		const { message, options } = harness.messages[0];
+		expect(message.customType).toBe("mx-pi-agents.directive");
+		expect(message.display).toBe(true);
+		expect(message.content).toContain("handled:find the config");
+		expect(options?.triggerTurn).toBe(true);
+		expect((message.details as { mode: string }).mode).toBe("single");
+	});
+
+	it("cascades {previous} through a bracketed pipeline", async () => {
+		await start();
+		const result = await emitInput({ text: "#[planner > explorer] add a health endpoint" });
+
+		expect(result).toEqual({ action: "handled" });
+		expect(inProcessState.plans).toEqual([
+			{ agentName: "planner", task: "add a health endpoint" },
+			{ agentName: "explorer", task: "handled:add a health endpoint" },
+		]);
+		const details = harness.messages[0].message.details as { mode: string; results: unknown[] };
+		expect(details.mode).toBe("pipeline");
+		expect(details.results).toHaveLength(2);
+	});
+
+	it("notifies and handles a malformed directive without appending a message", async () => {
+		await start();
+		const result = await emitInput({ text: "#builder" });
+
+		expect(result).toEqual({ action: "handled" });
+		expect(harness.notificationText()).toContain("missing a prompt");
+		expect(harness.messages).toHaveLength(0);
+	});
+
+	it("returns a refusal as a message for an unknown agent", async () => {
+		await start();
+		const result = await emitInput({ text: "#ghost do it" });
+
+		expect(result).toEqual({ action: "handled" });
+		expect(harness.messages).toHaveLength(1);
+		const details = harness.messages[0].message.details as { refusalReason?: string };
+		expect(details.refusalReason).toContain("unknown agent");
+	});
+
+	it("continues when the extension is disabled", async () => {
+		await start();
+		harness.flagValues.set("mx-pi-agents-disable", true);
+		const result = await emitInput({ text: "#explorer hi" });
+
+		expect(result).toEqual({ action: "continue" });
+		expect(harness.messages).toHaveLength(0);
+	});
+
+	it("continues for non-interactive sources", async () => {
+		await start();
+		const result = await harness.emit("input", { text: "#explorer hi", source: "extension" });
+
+		expect(result).toEqual({ action: "continue" });
+		expect(harness.messages).toHaveLength(0);
+	});
+
+	it("continues for a plain prompt", async () => {
+		await start();
+		const result = await emitInput({ text: "just a normal question" });
+
+		expect(result).toEqual({ action: "continue" });
+		expect(harness.messages).toHaveLength(0);
+	});
+
+	it("refuses a directive while streaming", async () => {
+		await start();
+		const result = await emitInput({ text: "#explorer hi", streamingBehavior: "steer" });
+
+		expect(result).toEqual({ action: "handled" });
+		expect(harness.notificationText()).toContain("wait for the current turn");
+		expect(harness.messages).toHaveLength(0);
+	});
+
+	it("refuses a directive carrying images", async () => {
+		await start();
+		const result = await emitInput({
+			text: "#explorer hi",
+			images: [{ type: "image", data: "x", mimeType: "image/png" }],
+		});
+
+		expect(result).toEqual({ action: "handled" });
+		expect(harness.notificationText()).toContain("images");
+		expect(harness.messages).toHaveLength(0);
+	});
+
+	it("prompts for a gated project agent and runs it on approval", async () => {
+		writeAgent(join(cwd, ".pi", "agents"), "local");
+		harness = createHarness({ cwd, hasUI: true, confirmResult: true, activeTools: ["read"] });
+		mxPiAgents(harness.pi);
+		await start();
+
+		const result = await harness.emit("input", { text: "#local do it", source: "interactive" });
+
+		expect(result).toEqual({ action: "handled" });
+		expect(harness.ui.confirm).toHaveBeenCalled();
+		expect(harness.messages).toHaveLength(1);
+	});
+
+	it("re-verifies the pinned hash before running a directive", async () => {
+		const path = writeAgent(join(agentDir, "agents"), "changing");
+		await start();
+		writeFileSync(path, "---\nname: changing\ndescription: changed\ntools: [read, bash, write]\n---\n\nWidened.\n");
+
+		const result = await emitInput({ text: "#changing do it" });
+
+		expect(result).toEqual({ action: "handled" });
+		const details = harness.messages[0].message.details as { refusalReason?: string };
+		expect(details.refusalReason).toContain("changed since session start");
+		expect(inProcessState.plans).toHaveLength(0);
+	});
+});
+
+describe("# directive autocomplete", () => {
+	function fakeCurrent() {
+		return {
+			getSuggestions: vi.fn(async () => ({ items: [{ value: "builtin", label: "builtin" }], prefix: "@" })),
+			applyCompletion: vi.fn(() => ({ lines: [], cursorLine: 0, cursorCol: 0 })),
+			shouldTriggerFileCompletion: vi.fn(() => true),
+		};
+	}
+
+	async function providerFor() {
+		await start();
+		const factory = harness.autocompleteFactories[0] as (current: unknown) => {
+			getSuggestions: (
+				lines: string[],
+				line: number,
+				col: number,
+				options: { signal: AbortSignal },
+			) => Promise<{
+				items: Array<{ value: string }>;
+				prefix: string;
+			}>;
+		};
+		const current = fakeCurrent();
+		return { provider: factory(current), current };
+	}
+
+	it("suggests agents at a single-name position", async () => {
+		const { provider } = await providerFor();
+		const result = await provider.getSuggestions(["#bui"], 0, 4, { signal: new AbortController().signal });
+		expect(result.items.map((item) => item.value)).toContain("#builder");
+		expect(result.prefix).toBe("#bui");
+	});
+
+	it("suggests agents inside a pipeline", async () => {
+		const { provider } = await providerFor();
+		const result = await provider.getSuggestions(["#[planner > bui"], 0, 15, {
+			signal: new AbortController().signal,
+		});
+		expect(result.items.map((item) => item.value)).toContain("builder");
+		expect(result.prefix).toBe("bui");
+	});
+
+	it("delegates to the built-in provider outside a directive", async () => {
+		const { provider, current } = await providerFor();
+		const result = await provider.getSuggestions(["@src"], 0, 4, { signal: new AbortController().signal });
+		expect(current.getSuggestions).toHaveBeenCalled();
+		expect(result.items[0].value).toBe("builtin");
+	});
+});
+
+describe("# agent progress widget", () => {
+	const WIDGET_KEY = "mx-pi-agents-progress";
+	const fakeTui = { requestRender: vi.fn() };
+
+	function progressComponent() {
+		const factory = harness.widgets.get(WIDGET_KEY) as
+			| ((tui: { requestRender: () => void }, theme: typeof mockTheme) => { render: (width: number) => string[] })
+			| undefined;
+		if (!factory) throw new Error("progress widget was not mounted");
+		return factory(fakeTui, mockTheme);
+	}
+
+	it("mounts the widget during a run and clears it after", async () => {
+		await start();
+		let release!: () => void;
+		inProcessState.beforeRun = () =>
+			new Promise<void>((resolve) => {
+				release = resolve;
+			});
+
+		const run = harness.emit("input", { text: "#explorer find it", source: "interactive" });
+		await vi.waitFor(() => expect(harness.widgets.has(WIDGET_KEY)).toBe(true));
+
+		const lines = progressComponent().render(80);
+		expect(lines.join("\n")).toContain("explorer");
+		expect(lines.join("\n")).toContain("Agents (");
+
+		release();
+		await expect(run).resolves.toEqual({ action: "handled" });
+		expect(harness.widgets.has(WIDGET_KEY)).toBe(false);
+	});
+
+	it("shows done and running agents mid-run", async () => {
+		await start();
+		let release!: () => void;
+		inProcessState.beforeRun = (_plan, index) =>
+			index === 1
+				? new Promise<void>((resolve) => {
+						release = resolve;
+					})
+				: undefined;
+
+		const run = harness.emit("input", { text: "#[explorer > planner] go", source: "interactive" });
+		await vi.waitFor(() => expect(inProcessState.plans).toHaveLength(2));
+		const rendered = progressComponent().render(80).join("\n");
+		expect(rendered).toContain("✓");
+		expect(rendered).toContain("explorer");
+		expect(rendered).toContain("◐");
+		expect(rendered).toContain("planner");
+
+		release();
+		await run;
+	});
+
+	it("registers the widget above the editor", async () => {
+		await start();
+		let release!: () => void;
+		inProcessState.beforeRun = () =>
+			new Promise<void>((resolve) => {
+				release = resolve;
+			});
+		const run = harness.emit("input", { text: "#explorer hi", source: "interactive" });
+		await vi.waitFor(() => expect(harness.widgets.has(WIDGET_KEY)).toBe(true));
+
+		const call = harness.ui.setWidget.mock.calls.find(
+			(entry) => entry[0] === WIDGET_KEY && typeof entry[1] === "function",
+		);
+		expect(call?.[2]).toEqual({ placement: "aboveEditor" });
+
+		await harness.emit("session_shutdown");
+		expect(harness.widgets.has(WIDGET_KEY)).toBe(false);
+		release();
+		await run;
+	});
+
+	it("cancels the run on Escape and does not trigger a turn", async () => {
+		await start();
+		let release!: () => void;
+		inProcessState.beforeRun = () =>
+			new Promise<void>((resolve) => {
+				release = resolve;
+			});
+
+		const run = harness.emit("input", { text: "#explorer hi", source: "interactive" });
+		await vi.waitFor(() => expect(harness.terminalHandlers.length).toBeGreaterThan(0));
+
+		const handler = harness.terminalHandlers[0];
+		expect(handler("\x1b")).toEqual({ consume: true });
+		release();
+		await expect(run).resolves.toEqual({ action: "handled" });
+
+		const { message, options } = harness.messages[0];
+		expect(message.content).toContain("Cancelled");
+		expect(options?.triggerTurn).toBe(false);
+		expect(harness.terminalHandlers).toHaveLength(0);
+	});
+});
+
+describe("child telemetry", () => {
+	it("publishes child events on the shared extension event bus", async () => {
+		await start();
+		const seen: unknown[] = [];
+		const unsubscribe = harness.events.on(CHILD_TELEMETRY_CHANNEL, (data) => seen.push(data));
+		await harness.emit("input", { text: "#explorer hi", source: "interactive" });
+		unsubscribe();
+
+		expect(seen).toHaveLength(1);
+		expect(seen[0]).toMatchObject({
+			agent: "explorer",
+			parentSessionId: "session-test",
+			type: "message_end",
+		});
+	});
+
+	it("shares one delegationId across every agent in a call", async () => {
+		await start();
+		await harness.emit("input", { text: "#[explorer > planner] go", source: "interactive" });
+		const sinks = inProcessState.telemetry.filter((sink) => sink !== undefined);
+		expect(sinks).toHaveLength(2);
+		expect(sinks[0]?.delegationId).toBe(sinks[1]?.delegationId);
+		expect(sinks[0]?.delegationId).toMatch(/^[0-9a-f-]{36}$/);
 	});
 });

@@ -7,7 +7,16 @@
  * that is what makes the guarantee durable.
  */
 
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
@@ -17,9 +26,12 @@ import { aggregateResults, capText } from "./output.js";
 import { planRun } from "./policy.js";
 import { assembleSystemPrompt, MAX_SYSTEM_PROMPT_BYTES } from "./prompt.js";
 import { discoverAgents, verifyPinned } from "./registry.js";
+import { buildGrantedTools } from "./runners/confine.js";
 import { createChildResourceLoader, createChildSettingsManager } from "./runners/in-process.js";
+import { buildBwrapArgv, buildSeatbeltProfile } from "./runners/sandbox.js";
 import { buildChildArgv, writeSystemPromptFile } from "./runners/subprocess.js";
-import { computeEffectiveTools } from "./schema.js";
+import { computeEffectiveTools, parseAgentDefinition } from "./schema.js";
+import { assertPathInScope, isPathInScope, resolveScope, ScopeRefusalError } from "./scope.js";
 import { isPathContained, safeTempName, sanitizeName, sanitizeUiText, sha256Hex } from "./security.js";
 import { checkTrust } from "./trust.js";
 import { type RunPlan, zeroUsage } from "./types.js";
@@ -54,6 +66,7 @@ function basePlan(overrides: Partial<RunPlan> = {}): RunPlan {
 		isolation: "process",
 		sandbox: "none",
 		cwd: targetRepo,
+		scope: { roots: [targetRepo], unrestricted: false },
 		diagnostics: [],
 		...overrides,
 	};
@@ -365,11 +378,19 @@ describe("invariant 7: child output is capped data that cannot trigger a parent 
 		expect(Buffer.byteLength(aggregate.text, "utf8")).toBeLessThan(4500);
 	});
 
-	it("returns results as data, not as a session message", async () => {
-		// Structural: `index.ts` never calls pi.sendMessage/sendUserMessage.
+	it("returns tool results as data; only an interactive directive can trigger a turn", async () => {
+		// Structural: the tool result path never pushes a session message. The one
+		// `pi.sendMessage` call is the user-initiated `#` directive, and it is
+		// gated on an interactive source earlier in the handler.
 		const source = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
-		expect(source).not.toContain("sendMessage(");
 		expect(source).not.toContain("sendUserMessage(");
+		const sendIndex = source.indexOf("pi.sendMessage(");
+		expect(sendIndex).toBeGreaterThan(-1);
+		expect(source.indexOf("pi.sendMessage(", sendIndex + 1)).toBe(-1);
+		const gateIndex = source.indexOf('event.source !== "interactive"');
+		expect(gateIndex).toBeGreaterThan(-1);
+		expect(gateIndex).toBeLessThan(sendIndex);
+		expect(source).toContain("triggerTurn:");
 	});
 });
 
@@ -486,6 +507,126 @@ describe("invariant 10: every run is bounded with partial-result semantics", () 
 	});
 });
 
+describe("invariant 11: a run cannot touch a path outside its granted scope", () => {
+	function dir(...segments: string[]): string {
+		const path = join(root, ...segments);
+		mkdirSync(path, { recursive: true });
+		// Canonicalise: `tmpdir()` is a symlink on macOS and the scope module
+		// returns realpaths.
+		return realpathSync(path);
+	}
+
+	it("defaults an absent scope to the cwd and refuses a sibling", () => {
+		const cwd = dir("inv11", "project");
+		const sibling = dir("inv11", "sibling");
+		const outcome = resolveScope({ cwd });
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(outcome.roots).toEqual([cwd]);
+		expect(outcome.unrestricted).toBe(false);
+		expect(isPathInScope(outcome.roots, join(cwd, "file.txt"))).toBe(true);
+		expect(isPathInScope(outcome.roots, join(sibling, "file.txt"))).toBe(false);
+	});
+
+	it("refuses a `..` escape and an absolute path outside the scope", () => {
+		const cwd = dir("inv11", "project");
+		const outside = dir("inv11", "outside");
+		expect(isPathInScope([cwd], join(cwd, "..", "outside", "file.txt"))).toBe(false);
+		expect(isPathInScope([cwd], join(outside, "file.txt"))).toBe(false);
+	});
+
+	it("refuses a symlink inside the scope that points outside it", () => {
+		const cwd = dir("inv11", "project");
+		const outside = dir("inv11", "outside");
+		symlinkSync(outside, join(cwd, "link"));
+		expect(isPathInScope([cwd], join(cwd, "link", "file.txt"))).toBe(false);
+		expect(() => assertPathInScope([cwd], join(cwd, "link", "file.txt"), "read.path")).toThrow(ScopeRefusalError);
+	});
+
+	it("refuses a scope entry that is an ancestor of cwd", () => {
+		const base = dir("inv11");
+		const cwd = dir("inv11", "project");
+		const outcome = resolveScope({ cwd, definitionScope: [base] });
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.reason).toBe("scope-invalid");
+	});
+
+	it("refuses a scope entry outside the config ceiling and accepts one beneath it", () => {
+		const ceilingRoot = dir("inv11", "ceiling");
+		const cwd = dir("inv11", "ceiling", "project");
+		const outside = dir("inv11", "outside");
+		const sub = dir("inv11", "ceiling", "sub");
+
+		const refused = resolveScope({ cwd, ceiling: [ceilingRoot], definitionScope: [outside] });
+		expect(refused.ok).toBe(false);
+		if (!refused.ok) expect(refused.reason).toBe("scope-invalid");
+
+		const accepted = resolveScope({ cwd, ceiling: [ceilingRoot], definitionScope: [sub] });
+		expect(accepted.ok).toBe(true);
+		if (accepted.ok) expect(accepted.roots).toEqual([sub]);
+	});
+
+	it("refuses `scope: []` and drops a malformed scope at parse time", () => {
+		const cwd = dir("inv11", "project");
+		const empty = resolveScope({ cwd, definitionScope: [] });
+		expect(empty.ok).toBe(false);
+		if (!empty.ok) expect(empty.reason).toBe("scope-invalid");
+
+		// Both directions of the KNOWN_FIELDS trap: `scope` parses, a typo and a
+		// wrong type both drop the whole definition.
+		expect(parseAgentDefinition("---\nname: a\ndescription: d\nscope: [sub]\n---\nbody").ok).toBe(true);
+		expect(parseAgentDefinition("---\nname: a\ndescription: d\nscopes: [sub]\n---\nbody").ok).toBe(false);
+		expect(parseAgentDefinition("---\nname: a\ndescription: d\nscope: sub\n---\nbody").ok).toBe(false);
+	});
+
+	it("refuses unsandboxed bash and subprocess isolation under the default ceiling", () => {
+		const unsandboxed = planRun(
+			makeAgent({ name: "bashy", tools: ["read", "bash"], sandbox: "none" }),
+			"task",
+			makeSessionContext(),
+		);
+		expect(unsandboxed.ok).toBe(false);
+		if (!unsandboxed.ok) expect(unsandboxed.refusal.reason).toBe("scope-unenforceable");
+
+		const subprocess = planRun(
+			makeAgent({ name: "subby", isolation: "subprocess", tools: ["read"] }),
+			"task",
+			makeSessionContext(),
+		);
+		expect(subprocess.ok).toBe(false);
+		if (!subprocess.ok) expect(subprocess.refusal.reason).toBe("scope-unenforceable");
+	});
+
+	it("licenses an unconfined run only under a `/` ceiling", () => {
+		const agent = makeAgent({ name: "licensed", tools: ["read", "bash"], sandbox: "none" });
+		const outcome = planRun(agent, "task", makeSessionContext({ scopeCeiling: ["/"] }));
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(outcome.plan.scope.unrestricted).toBe(true);
+		expect(outcome.plan.scope.roots).toEqual(["/"]);
+	});
+
+	it("confines every granted file tool through its tool definition", () => {
+		const plan = basePlan({ tools: ["read", "write", "edit", "grep", "find", "ls", "bash"] });
+		const defs = buildGrantedTools(plan);
+		// bash is handled by the sandbox wrapper; every file tool is wrapped.
+		expect(defs.map((definition) => definition.name).sort()).toEqual(["edit", "find", "grep", "ls", "read", "write"]);
+	});
+
+	it("narrows the sandbox profile and argv", () => {
+		const scope = realpathSync(targetRepo);
+		const profile = buildSeatbeltProfile([scope], [scope]);
+		expect(profile).not.toMatch(/\(allow file-read\*\)/);
+		expect(profile).toContain(`(allow file-read* (subpath "${scope}"))`);
+
+		const argv = buildBwrapArgv("ls", [scope], [scope], scope).join(" ");
+		expect(argv).not.toContain("--ro-bind / /");
+		expect(argv).toContain(`--ro-bind ${scope} ${scope}`);
+		expect(argv).toContain("--unshare-all");
+	});
+});
+
 describe("supporting controls", () => {
 	it("hashes definition content deterministically", () => {
 		expect(sha256Hex("abc")).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
@@ -493,6 +634,10 @@ describe("supporting controls", () => {
 
 	it("fails closed on a path-containment check with a missing root", () => {
 		expect(isPathContained(join(root, "nonexistent"), join(root, "nonexistent", "file"))).toBe(false);
+	});
+
+	it("treats the filesystem root as containing every path", () => {
+		expect(isPathContained("/", "/etc/hosts")).toBe(true);
 	});
 
 	it("refuses a gated agent with no stored approval in a headless session", () => {

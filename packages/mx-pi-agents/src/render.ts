@@ -18,7 +18,7 @@ export interface RenderTheme {
 
 /** Structured details attached to a `mx_pi_agent` tool result. */
 export interface AgentToolDetails {
-	mode: "single" | "parallel" | "chain";
+	mode: "single" | "parallel" | "chain" | "pipeline";
 	results: RunResult[];
 	diagnostics: AgentDiagnostic[];
 	/** Set when the call was refused before any session was created. */
@@ -95,6 +95,20 @@ export function renderResultLines(details: AgentToolDetails, theme: RenderTheme)
 		if (result.truncated) lines.push(`  ${theme.fg("warning", "(output truncated)")}`);
 	}
 	return lines;
+}
+
+/** Render a `#` directive result message appended to the transcript. */
+export function renderDirectiveMessage(
+	message: { details?: unknown; content?: unknown },
+	theme: RenderTheme,
+): string[] {
+	const header = theme.fg("toolTitle", "mx-pi-agents directive");
+	const details = message.details as AgentToolDetails | undefined;
+	if (details === undefined) {
+		const text = typeof message.content === "string" ? message.content : "";
+		return text.length > 0 ? [header, theme.fg("toolOutput", sanitizeUiText(text, 200))] : [header];
+	}
+	return [header, ...renderResultLines(details, theme)];
 }
 
 /** Render the roster shown by `/mx-pi-agents list`. */

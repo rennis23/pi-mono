@@ -1,8 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_BUDGETS } from "./budget.js";
 import { describePlan, describeRefusal, planRun, type SessionContext } from "./policy.js";
 import { MAX_SYSTEM_PROMPT_BYTES } from "./prompt.js";
 import type { AgentDefinition, PinnedAgent, SourceKind } from "./types.js";
+
+let workDir: string;
+
+beforeEach(() => {
+	// Scope containment requires the run cwd to exist on disk, so use a real
+	// temp directory rather than a synthetic `/work` path.
+	workDir = realpathSync(mkdtempSync(join(tmpdir(), "mx-pi-agents-policy-")));
+});
+
+afterEach(() => {
+	rmSync(workDir, { recursive: true, force: true });
+});
 
 function makeAgent(overrides: Partial<AgentDefinition> = {}, kind: SourceKind = "global"): PinnedAgent {
 	const definition: AgentDefinition = {
@@ -10,6 +25,7 @@ function makeAgent(overrides: Partial<AgentDefinition> = {}, kind: SourceKind = 
 		description: "review things",
 		tools: ["read", "grep"],
 		toolsInheritance: "none",
+		scope: undefined,
 		model: undefined,
 		thinking: undefined,
 		maxTurns: undefined,
@@ -36,7 +52,7 @@ function makeAgent(overrides: Partial<AgentDefinition> = {}, kind: SourceKind = 
 
 function context(overrides: Partial<SessionContext> = {}): SessionContext {
 	return {
-		cwd: "/work",
+		cwd: workDir,
 		parentTools: ["read", "grep", "bash", "mx_pi_agent"],
 		availableTools: ["read", "grep", "bash", "write", "mx_pi_agent"],
 		limits: {},
@@ -73,7 +89,7 @@ describe("planRun", () => {
 	});
 
 	it("drops unresolved inherited tools instead of refusing", () => {
-		const agent = makeAgent({ tools: undefined, toolsInheritance: "parent" });
+		const agent = makeAgent({ tools: undefined, toolsInheritance: "parent", sandbox: "os" });
 		const plan = expectPlan(planRun(agent, "task", context()));
 		expect(plan.tools).toEqual(["read", "grep", "bash"]);
 		expect(plan.diagnostics.some((d) => d.message.includes("mx_pi_agent"))).toBe(false);
@@ -87,6 +103,11 @@ describe("planRun", () => {
 	it("refuses when the declared model is unavailable", () => {
 		const agent = makeAgent({ model: "anthropic/claude-opus-4-5" });
 		expectRefusal(planRun(agent, "task", context({ isModelAvailable: () => false })), "model-unavailable");
+	});
+
+	it("resolves the scope before the model, so a malformed definition names the scope", () => {
+		const agent = makeAgent({ scope: ["/"], model: "anthropic/claude-opus-4-5" });
+		expectRefusal(planRun(agent, "task", context({ isModelAvailable: () => false })), "scope-invalid");
 	});
 
 	it("refuses sandbox: os when no backend exists", () => {
@@ -133,15 +154,79 @@ describe("planRun", () => {
 	});
 
 	it("carries isolation and sandbox through to the plan", () => {
-		const plan = expectPlan(planRun(makeAgent({ isolation: "subprocess", sandbox: "os" }), "task", context()));
+		const plan = expectPlan(
+			planRun(
+				makeAgent({ isolation: "subprocess", sandbox: "os" }),
+				"task",
+				// subprocess cannot be path-confined, so it needs an explicit `/` ceiling.
+				context({ scopeCeiling: ["/"] }),
+			),
+		);
 		expect(plan.isolation).toBe("subprocess");
 		expect(plan.sandbox).toBe("os");
+		expect(plan.scope.unrestricted).toBe(true);
+	});
+
+	it("defaults the plan scope to the cwd when nothing is declared", () => {
+		const plan = expectPlan(planRun(makeAgent(), "task", context()));
+		expect(plan.scope.roots).toEqual([workDir]);
+		expect(plan.scope.unrestricted).toBe(false);
+	});
+
+	it("refuses an empty scope declaration", () => {
+		expectRefusal(planRun(makeAgent({ scope: [] }), "task", context()), "scope-invalid");
+	});
+
+	it("refuses a scope entry that is an ancestor of cwd", () => {
+		expectRefusal(planRun(makeAgent({ scope: ["/"] }), "task", context()), "scope-invalid");
+	});
+
+	it("refuses a scope entry outside a configured ceiling", () => {
+		const ceilingDir = join(workDir, "ceiling");
+		const sub = join(ceilingDir, "sub");
+		const outside = join(workDir, "outside");
+		mkdirSync(sub, { recursive: true });
+		mkdirSync(outside, { recursive: true });
+
+		const accepted = planRun(makeAgent({ scope: [sub] }), "task", context({ scopeCeiling: [ceilingDir] }));
+		expect(accepted.ok).toBe(true);
+
+		const agent = makeAgent({ scope: [outside] });
+		expectRefusal(planRun(agent, "task", context({ scopeCeiling: [ceilingDir] })), "scope-invalid");
+	});
+
+	it("refuses unsandboxed bash under the default ceiling", () => {
+		const agent = makeAgent({ tools: ["read", "bash"], sandbox: "none" });
+		expectRefusal(planRun(agent, "task", context()), "scope-unenforceable");
+	});
+
+	it("refuses subprocess isolation under the default ceiling", () => {
+		const agent = makeAgent({ isolation: "subprocess" });
+		expectRefusal(planRun(agent, "task", context()), "scope-unenforceable");
+	});
+
+	it("names the escape in the unenforceable refusal", () => {
+		const agent = makeAgent({ tools: ["read", "bash"] });
+		const outcome = planRun(agent, "task", context());
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.refusal.message).toContain("sandbox: os");
+		expect(outcome.refusal.message).toContain('scope: ["/"]');
+	});
+
+	it("licenses an unconfined run under a `/` ceiling", () => {
+		const agent = makeAgent({ tools: ["read", "bash"], sandbox: "none" });
+		const plan = expectPlan(planRun(agent, "task", context({ scopeCeiling: ["/"] })));
+		expect(plan.scope.unrestricted).toBe(true);
+		expect(plan.scope.roots).toEqual(["/"]);
 	});
 
 	it("does not leak the cwd or paths into the system prompt", () => {
-		const plan = expectPlan(planRun(makeAgent(), "task", context({ cwd: "/secret/project" })));
-		expect(plan.systemPrompt).not.toContain("/secret/project");
-		expect(plan.cwd).toBe("/secret/project");
+		const secret = join(workDir, "secret-project");
+		mkdirSync(secret, { recursive: true });
+		const plan = expectPlan(planRun(makeAgent(), "task", context({ cwd: secret })));
+		expect(plan.systemPrompt).not.toContain(secret);
+		expect(plan.cwd).toBe(secret);
 	});
 
 	it("never widens a grant from a gated source", () => {
@@ -175,5 +260,6 @@ describe("describePlan", () => {
 		expect(text).toContain("reviewer");
 		expect(text).toContain("tools=read,grep");
 		expect(text).toContain("isolation=process");
+		expect(text).toContain("scope=cwd");
 	});
 });

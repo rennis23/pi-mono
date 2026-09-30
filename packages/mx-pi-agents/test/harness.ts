@@ -16,6 +16,7 @@ import type {
 	ExtensionContext,
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent";
+import { createEventBus, type EventBus } from "@earendil-works/pi-coding-agent";
 import { vi } from "vitest";
 
 /** Theme that echoes plain text, keeping assertions free of ANSI codes. */
@@ -60,6 +61,8 @@ export interface HarnessOptions {
 	confirmResult?: boolean;
 	/** Environment passed to `createRedactor`-style redaction checks. */
 	env?: Record<string, string>;
+	/** Session id reported by `ctx.sessionManager.getSessionId()`. */
+	sessionId?: string;
 }
 
 export function createHarness(options: HarnessOptions = {}) {
@@ -69,6 +72,18 @@ export function createHarness(options: HarnessOptions = {}) {
 	const flags = new Map<string, unknown>();
 	const flagValues = new Map<string, boolean | string>(Object.entries(options.flags ?? {}));
 	const notifications: Array<{ message: string; type?: string }> = [];
+	/** Custom messages passed to `pi.sendMessage`. */
+	const messages: Array<{ message: Record<string, unknown>; options: Record<string, unknown> | undefined }> = [];
+	/** Renderers registered with `pi.registerMessageRenderer`. */
+	const messageRenderers = new Map<string, unknown>();
+	/** Factories registered with `ctx.ui.addAutocompleteProvider`. */
+	const autocompleteFactories: Array<(current: unknown) => unknown> = [];
+	/** Widgets currently set via `ctx.ui.setWidget`, keyed by widget key. */
+	const widgets = new Map<string, unknown>();
+	/** Handlers registered with `ctx.ui.onTerminalInput`. */
+	const terminalHandlers: Array<(data: string) => unknown> = [];
+	/** Shared extension event bus, as `pi.events`. */
+	const events: EventBus = createEventBus();
 
 	const ui = {
 		notify: vi.fn((message: string, type?: string) => {
@@ -78,7 +93,20 @@ export function createHarness(options: HarnessOptions = {}) {
 		select: vi.fn(async () => undefined),
 		input: vi.fn(async () => undefined),
 		setStatus: vi.fn(),
-		setWidget: vi.fn(),
+		setWidget: vi.fn((key: string, content: unknown, _options?: unknown) => {
+			if (content === undefined) widgets.delete(key);
+			else widgets.set(key, content);
+		}),
+		onTerminalInput: vi.fn((handler: (data: string) => unknown) => {
+			terminalHandlers.push(handler);
+			return () => {
+				const index = terminalHandlers.indexOf(handler);
+				if (index >= 0) terminalHandlers.splice(index, 1);
+			};
+		}),
+		addAutocompleteProvider: vi.fn((factory: (current: unknown) => unknown) => {
+			autocompleteFactories.push(factory);
+		}),
 		theme: mockTheme,
 	};
 
@@ -93,6 +121,9 @@ export function createHarness(options: HarnessOptions = {}) {
 		hasUI: options.hasUI ?? true,
 		cwd: options.cwd ?? process.cwd(),
 		modelRegistry,
+		sessionManager: {
+			getSessionId: () => options.sessionId ?? "session-test",
+		},
 		model: undefined,
 		isIdle: () => true,
 		isProjectTrusted: () => false,
@@ -119,9 +150,16 @@ export function createHarness(options: HarnessOptions = {}) {
 			flags.set(name, def);
 		},
 		getFlag: (name: string) => flagValues.get(name),
+		events,
 		getActiveTools: () => options.activeTools ?? ["read", "grep", "bash"],
 		getAllTools: () => [],
 		setActiveTools: vi.fn(),
+		registerMessageRenderer: (customType: string, renderer: unknown) => {
+			messageRenderers.set(customType, renderer);
+		},
+		sendMessage: vi.fn(async (message: Record<string, unknown>, sendOptions?: Record<string, unknown>) => {
+			messages.push({ message, options: sendOptions });
+		}),
 	} as unknown as ExtensionAPI;
 
 	return {
@@ -129,6 +167,12 @@ export function createHarness(options: HarnessOptions = {}) {
 		ctx,
 		ui,
 		notifications,
+		messages,
+		messageRenderers,
+		autocompleteFactories,
+		widgets,
+		terminalHandlers,
+		events,
 		modelRegistry,
 		handlers,
 		commands,
@@ -140,7 +184,9 @@ export function createHarness(options: HarnessOptions = {}) {
 		emit: async (event: string, payload: Record<string, unknown> = {}) => {
 			const list = handlers.get(event);
 			if (!list || list.length === 0) throw new Error(`no handler registered for "${event}"`);
-			for (const handler of list) await handler({ type: event, ...payload }, ctx);
+			let result: unknown;
+			for (const handler of list) result = await handler({ type: event, ...payload }, ctx);
+			return result;
 		},
 
 		/** Invoke the `/mx-pi-agents` command handler. */

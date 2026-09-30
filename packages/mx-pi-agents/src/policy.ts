@@ -11,6 +11,7 @@
 import { resolveBudgets } from "./budget.js";
 import { assemblePlanPrompt } from "./prompt.js";
 import { computeEffectiveTools } from "./schema.js";
+import { describeScope, isUnconfineable, resolveScope } from "./scope.js";
 import type { AgentDiagnostic, Budgets, PinnedAgent, PlanOutcome, Refusal, RefusalReason, RunPlan } from "./types.js";
 
 /** Session facts the policy needs. None of them come from the target repo. */
@@ -23,6 +24,8 @@ export interface SessionContext {
 	availableTools: readonly string[];
 	/** Config ceilings that bound agent-declared budgets. */
 	limits: Partial<Budgets>;
+	/** Config scope ceiling; absent means `[cwd]`. */
+	scopeCeiling?: readonly string[];
 	/** Whether `sandbox: os` is available on this platform. */
 	sandboxAvailable: boolean;
 	/** Whether the resolved model exists and has credentials. */
@@ -42,8 +45,10 @@ function refuse(reason: RefusalReason, message: string, diagnostics: AgentDiagno
  * 1. spawn-capable tools may never be granted (`spawn-tool-grant`) — checked first
  *    because recursion is a structural problem, not a resolution problem
  * 2. explicit grants must resolve in the child (`unresolved-tool`)
- * 3. a declared model must resolve (`model-unavailable`)
- * 4. `sandbox: os` requires a backend (`sandbox-unavailable`)
+ * 3. the effective path scope must resolve and be enforceable (`scope-invalid` /
+ *    `scope-unenforceable`)
+ * 4. a declared model must resolve (`model-unavailable`)
+ * 5. `sandbox: os` requires a backend (`sandbox-unavailable`)
  */
 export function planRun(agent: PinnedAgent, task: string, ctx: SessionContext): PlanOutcome {
 	const diagnostics: AgentDiagnostic[] = [];
@@ -72,6 +77,22 @@ export function planRun(agent: PinnedAgent, task: string, ctx: SessionContext): 
 			`agent "${definition.name}" grants tools that do not resolve in the child: ${grants.unresolvedExplicit.join(", ")}`,
 			diagnostics,
 		);
+	}
+
+	const scope = resolveScope({
+		definitionScope: definition.scope,
+		ceiling: ctx.scopeCeiling,
+		cwd: ctx.cwd,
+		vector: { isolation: definition.isolation, sandbox: definition.sandbox, tools: grants.tools },
+	});
+	if (!scope.ok) {
+		return refuse(scope.reason, `agent "${definition.name}" ${scope.message}`, diagnostics);
+	}
+	if (isUnconfineable({ isolation: definition.isolation, sandbox: definition.sandbox, tools: grants.tools })) {
+		diagnostics.push({
+			level: "info",
+			message: `run is unconfined (an explicit "/" ceiling licensed ${definition.isolation === "subprocess" ? "isolation: subprocess" : "unsandboxed bash"})`,
+		});
 	}
 
 	if (definition.model !== undefined && !ctx.isModelAvailable(definition.model)) {
@@ -120,6 +141,7 @@ export function planRun(agent: PinnedAgent, task: string, ctx: SessionContext): 
 		isolation: definition.isolation,
 		sandbox: definition.sandbox,
 		cwd: ctx.cwd,
+		scope: { roots: scope.roots, unrestricted: scope.unrestricted },
 		diagnostics,
 	};
 
@@ -138,5 +160,5 @@ export function describeRefusal(refusal: Refusal): string {
 /** Compact one-line summary of a plan's effective capabilities. */
 export function describePlan(plan: RunPlan): string {
 	const tools = plan.tools.length === 0 ? "none" : plan.tools.join(",");
-	return `${plan.agentName} [${plan.source.kind}] tools=${tools} isolation=${plan.isolation} turns=${plan.budgets.maxTurns} timeout=${plan.budgets.timeoutMs}ms tokens=${plan.budgets.tokenBudget}`;
+	return `${plan.agentName} [${plan.source.kind}] tools=${tools} isolation=${plan.isolation} scope=${describeScope(plan.scope.roots, plan.scope.unrestricted, plan.cwd)} turns=${plan.budgets.maxTurns} timeout=${plan.budgets.timeoutMs}ms tokens=${plan.budgets.tokenBudget}`;
 }
