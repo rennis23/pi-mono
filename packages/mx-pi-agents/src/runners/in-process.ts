@@ -62,6 +62,12 @@ export interface InProcessRunnerDeps {
 	resolveModel?: (label: string) => { provider: string; modelId: string } | undefined;
 	/** Override the sandbox availability probe (tests). */
 	isSandboxAvailable?: () => boolean;
+	/**
+	 * Override pi SDK session creation (tests). Production always uses
+	 * `createAgentSession`; the seam lets tests exercise the runner's control
+	 * flow without selecting a model (which could reach the network).
+	 */
+	createSession?: typeof createAgentSession;
 }
 
 /** Extract assistant text from a message content array. */
@@ -297,7 +303,7 @@ async function runInProcess(plan: RunPlan, options: RunOptions, deps: InProcessR
 		const modelRuntime = deps.modelRuntime;
 		const model = plan.model !== undefined ? deps.resolveModel?.(plan.model) : undefined;
 
-		const created = await createAgentSession({
+		const created = await (deps.createSession ?? createAgentSession)({
 			cwd: plan.cwd,
 			agentDir: deps.agentDir,
 			...(modelRuntime ? { modelRuntime } : {}),

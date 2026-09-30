@@ -21,6 +21,7 @@ import {
 	createChildResourceLoader,
 	createChildSettingsManager,
 	createInProcessRunner,
+	type InProcessRunnerDeps,
 	PROJECT_SCOPED_SETTINGS_KEYS,
 } from "./in-process.js";
 
@@ -339,20 +340,32 @@ describe("runInProcess refusal paths (no model call)", () => {
 	it("does not refuse sandbox: os when the tool is not granted", async () => {
 		// bash is not granted, so the sandbox requirement is vacuous: this must
 		// reach session creation (and fail there for lack of a model, not refuse).
-		const runner = createInProcessRunner({ agentDir, isSandboxAvailable: () => false });
+		// The session factory is injected so the run never selects a model or
+		// touches the network; the failure is deterministic.
+		const createSession = vi.fn(async () => {
+			throw new Error("no model configured");
+		}) as unknown as NonNullable<InProcessRunnerDeps["createSession"]>;
+		const runner = createInProcessRunner({ agentDir, isSandboxAvailable: () => false, createSession });
 		const result = await runner.run(planFor({ sandbox: "os", tools: ["read"] }), {
 			signal: new AbortController().signal,
 			now: () => 0,
 		});
+		expect(createSession).toHaveBeenCalledTimes(1);
+		expect(result.errorMessage).toContain("no model configured");
 		expect(result.errorMessage ?? "").not.toContain("sandbox: os requested");
 	});
 
 	it("reports a child error rather than throwing when session creation fails", async () => {
-		const runner = createInProcessRunner({ agentDir });
+		const createSession = vi.fn(async () => {
+			throw new Error("session creation failed");
+		}) as unknown as NonNullable<InProcessRunnerDeps["createSession"]>;
+		const runner = createInProcessRunner({ agentDir, createSession });
 		const result = await runner.run(planFor(), { signal: new AbortController().signal, now: () => 0 });
 		// Whatever happens, the runner must resolve with a RunResult shape.
+		expect(createSession).toHaveBeenCalledTimes(1);
 		expect(result.agent).toBe("explorer");
-		expect(typeof result.ok).toBe("boolean");
+		expect(result.ok).toBe(false);
+		expect(result.errorMessage).toContain("session creation failed");
 		expect(result.usage).toBeDefined();
 	});
 
