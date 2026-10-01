@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
@@ -11,6 +11,7 @@ import {
 	createSandboxedBashOperations,
 	detectBackend,
 	isSandboxAvailable,
+	SEATBELT_PROFILE_NAME,
 	SEATBELT_SYSTEM_READ_ROOTS,
 	sandboxUnavailableReason,
 	shellQuote,
@@ -241,7 +242,9 @@ describe("createSandboxedBashOperations", () => {
 
 	it("does not create any file inside the working directory", async () => {
 		dir = mkdtempSync(join(tmpdir(), "mx-pi-agents-sandbox-"));
-		const exec = vi.fn(async () => ({ exitCode: 0 }));
+		const exec = vi.fn<(command: string, cwd: string, options: unknown) => Promise<{ exitCode: number }>>(
+			async () => ({ exitCode: 0 }),
+		);
 		const operations = createSandboxedBashOperations({ exec }, { writeRoots: [dir], platform: "darwin" });
 		await operations.exec("true", dir, { onData: () => {} });
 		expect(existsSync(join(dir, "system-prompt.md"))).toBe(false);
@@ -298,6 +301,136 @@ describe("temp file permissions", () => {
 			expect(statSync(written.dir).mode & 0o777).toBe(0o700);
 		} finally {
 			rmSync(written.dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("sandbox: boundary hardening", () => {
+	it("detectBackend maps supported platforms and rejects others", () => {
+		expect(detectBackend("darwin")).toBe("seatbelt");
+		expect(detectBackend("linux")).toBe("bwrap");
+		expect(detectBackend("win32")).toBeUndefined();
+	});
+
+	it("sandboxUnavailableReason names the platform or the missing binary", () => {
+		expect(sandboxUnavailableReason("win32")).toContain("not supported on win32");
+		expect(sandboxUnavailableReason("darwin")).toContain("sandbox-exec");
+		expect(sandboxUnavailableReason("linux")).toContain("bwrap");
+	});
+
+	it("isSandboxAvailable is false on an unsupported platform", () => {
+		expect(isSandboxAvailable("win32")).toBe(false);
+	});
+
+	it("whichBinary returns undefined without a PATH", () => {
+		expect(whichBinary("node", undefined)).toBeUndefined();
+		expect(whichBinary("node", "")).toBeUndefined();
+	});
+
+	it("buildSeatbeltArgv wraps the command", () => {
+		expect(buildSeatbeltArgv("/p.sb", "echo hi")).toEqual(["-f", "/p.sb", "/bin/bash", "-c", "echo hi"]);
+	});
+
+	it("buildSeatbeltProfile dedupes roots and denies by default", () => {
+		const profile = buildSeatbeltProfile(["/w", "/w", ""], ["/r", "/r"]);
+		expect(profile).toContain("(deny default)");
+		expect(profile.match(/file-write\* \(subpath "\/w"\)/g)).toHaveLength(1);
+		expect(profile).toContain("(deny network*)");
+	});
+
+	it("buildBwrapArgv binds roots and chdirs", () => {
+		const args = buildBwrapArgv("echo hi", ["/w"], ["/r"], "/cwd");
+		expect(args).toContain("--unshare-all");
+		expect(args.filter((arg) => arg === "--ro-bind")).toHaveLength(BWRAP_READ_ROOTS.length + 1);
+		expect(args[args.indexOf("--chdir") + 1]).toBe("/cwd");
+		expect(args[args.length - 1]).toBe("echo hi");
+	});
+
+	it("createSandboxedBashOperations throws on an unsupported platform", () => {
+		expect(() =>
+			createSandboxedBashOperations({ exec: vi.fn() } as never, { writeRoots: ["/w"], platform: "win32" }),
+		).toThrow(/not supported/);
+	});
+
+	it("createSandboxedBashOperations runs seatbelt with an inline profile", () => {
+		const exec = vi.fn(() => Promise.resolve({ exitCode: 0 }));
+		const operations = createSandboxedBashOperations({ exec } as never, { writeRoots: ["/w"], platform: "darwin" });
+		void operations.exec("echo hi", "/cwd", { onData: () => {} });
+		expect(exec).toHaveBeenCalledTimes(1);
+		const [command] = exec.mock.calls[0] as unknown as [string];
+		expect(command).toContain("sandbox-exec -p");
+		expect(command).toContain("/bin/bash -c");
+	});
+});
+
+describe("sandbox: survivor kills", () => {
+	it("pins the profile name and bwrap read roots", () => {
+		expect(SEATBELT_PROFILE_NAME).toBe("mx-pi-agents");
+		expect(BWRAP_READ_ROOTS).toEqual(["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"]);
+	});
+
+	it("drops empty roots from the profile", () => {
+		const profile = buildSeatbeltProfile(["/w", ""], ["/r", ""]);
+		expect(profile).not.toContain('(subpath "")');
+	});
+
+	it("reflects sandbox-exec and bwrap availability", () => {
+		expect(isSandboxAvailable("darwin")).toBe(existsSync("/usr/bin/sandbox-exec"));
+		expect(isSandboxAvailable("linux")).toBe(whichBinary("bwrap", process.env.PATH) !== undefined);
+		expect(sandboxUnavailableReason("linux")).toBe("bwrap (bubblewrap) is not installed");
+		expect(sandboxUnavailableReason("darwin")).toBe("sandbox-exec is not available at /usr/bin/sandbox-exec");
+	});
+
+	it("uses the explicit writeRoots rather than the cwd", async () => {
+		const exec = vi.fn<(command: string, cwd: string, options: unknown) => Promise<{ exitCode: number }>>(
+			async () => ({ exitCode: 0 }),
+		);
+		const operations = createSandboxedBashOperations({ exec }, { writeRoots: ["/w"], platform: "darwin" });
+		await operations.exec("true", "/cwd", { onData: () => {} });
+		expect(exec.mock.calls[0]?.[0] ?? "").toContain('(subpath "/w")');
+	});
+
+	it("uses writeRoots as the read roots when none are given", async () => {
+		const exec = vi.fn<(command: string, cwd: string, options: unknown) => Promise<{ exitCode: number }>>(
+			async () => ({ exitCode: 0 }),
+		);
+		const operations = createSandboxedBashOperations({ exec }, { writeRoots: ["/w"], platform: "darwin" });
+		await operations.exec("true", "/cwd", { onData: () => {} });
+		expect(exec.mock.calls[0]?.[0] ?? "").toContain('(allow file-read* (subpath "/w"))');
+	});
+
+	it("uses explicit readRoots when given", async () => {
+		const exec = vi.fn<(command: string, cwd: string, options: unknown) => Promise<{ exitCode: number }>>(
+			async () => ({ exitCode: 0 }),
+		);
+		const operations = createSandboxedBashOperations(
+			{ exec },
+			{ writeRoots: ["/w"], readRoots: ["/r"], platform: "darwin" },
+		);
+		await operations.exec("true", "/cwd", { onData: () => {} });
+		expect(exec.mock.calls[0]?.[0] ?? "").toContain('(allow file-read* (subpath "/r"))');
+	});
+
+	it("shell-quotes the bwrap command when bwrap is on PATH", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "mx-pi-agents-sandbox-kill-"));
+		const bin = join(dir, "bin");
+		mkdirSync(bin, { recursive: true });
+		writeFileSync(join(bin, "bwrap"), "");
+		const originalPath = process.env.PATH;
+		process.env.PATH = `${bin}:/usr/bin:/bin`;
+		try {
+			const exec = vi.fn<(command: string, cwd: string, options: unknown) => Promise<{ exitCode: number }>>(
+				async () => ({ exitCode: 0 }),
+			);
+			const operations = createSandboxedBashOperations({ exec }, { writeRoots: [dir], platform: "linux" });
+			await operations.exec("echo hi", dir, { onData: () => {} });
+			const command = exec.mock.calls[0]?.[0] ?? "";
+			expect(command).toContain("--unshare-all");
+			expect(command).toContain("'/bin/bash'");
+			expect(command).toContain("'echo hi'");
+		} finally {
+			process.env.PATH = originalPath;
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });

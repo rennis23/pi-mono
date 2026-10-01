@@ -7,11 +7,11 @@
  * before any runner is reached, which is exactly the property under test.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import mxPiAgents from "./index.js";
+import mxPiAgents, { unavailable } from "./index.js";
 import { CHILD_TELEMETRY_CHANNEL } from "./src/telemetry.js";
 import { createHarness, type Harness, mockTheme } from "./test/harness.js";
 
@@ -440,9 +440,9 @@ describe("# directive input handler", () => {
 		return harness.emit("input", { source: "interactive", ...payload });
 	}
 
-	it("runs a single agent, appends a custom message and triggers a turn", async () => {
+	it("delegates a single bracketed agent, appends a custom message and triggers a turn", async () => {
 		await start();
-		const result = await emitInput({ text: "#explorer find the config" });
+		const result = await emitInput({ text: "#[explorer] find the config" });
 
 		expect(result).toEqual({ action: "handled" });
 		expect(inProcessState.plans).toEqual([{ agentName: "explorer", task: "find the config" }]);
@@ -452,7 +452,7 @@ describe("# directive input handler", () => {
 		expect(message.display).toBe(true);
 		expect(message.content).toContain("handled:find the config");
 		expect(options?.triggerTurn).toBe(true);
-		expect((message.details as { mode: string }).mode).toBe("single");
+		expect((message.details as { mode: string }).mode).toBe("pipeline");
 	});
 
 	it("cascades {previous} through a bracketed pipeline", async () => {
@@ -469,23 +469,23 @@ describe("# directive input handler", () => {
 		expect(details.results).toHaveLength(2);
 	});
 
-	it("notifies and handles a malformed directive without appending a message", async () => {
+	it("switches the main session on a bare directive and sets status", async () => {
 		await start();
 		const result = await emitInput({ text: "#builder" });
 
 		expect(result).toEqual({ action: "handled" });
-		expect(harness.notificationText()).toContain("missing a prompt");
+		expect(harness.notificationText()).toContain("switched to main builder");
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents-persona", "main:builder");
 		expect(harness.messages).toHaveLength(0);
 	});
 
-	it("returns a refusal as a message for an unknown agent", async () => {
+	it("refuses an unknown agent without reaching the model", async () => {
 		await start();
 		const result = await emitInput({ text: "#ghost do it" });
 
 		expect(result).toEqual({ action: "handled" });
-		expect(harness.messages).toHaveLength(1);
-		const details = harness.messages[0].message.details as { refusalReason?: string };
-		expect(details.refusalReason).toContain("unknown agent");
+		expect(harness.notificationText()).toContain("unknown agent");
+		expect(harness.messages).toHaveLength(0);
 	});
 
 	it("continues when the extension is disabled", async () => {
@@ -534,7 +534,7 @@ describe("# directive input handler", () => {
 		expect(harness.messages).toHaveLength(0);
 	});
 
-	it("prompts for a gated project agent and runs it on approval", async () => {
+	it("prompts for a gated project agent and switches the main session on approval", async () => {
 		writeAgent(join(cwd, ".pi", "agents"), "local");
 		harness = createHarness({ cwd, hasUI: true, confirmResult: true, activeTools: ["read"] });
 		mxPiAgents(harness.pi);
@@ -542,12 +542,13 @@ describe("# directive input handler", () => {
 
 		const result = await harness.emit("input", { text: "#local do it", source: "interactive" });
 
-		expect(result).toEqual({ action: "handled" });
+		expect(result).toEqual({ action: "transform", text: "do it" });
 		expect(harness.ui.confirm).toHaveBeenCalled();
-		expect(harness.messages).toHaveLength(1);
+		expect(harness.ui.confirm.mock.calls[0][1]).toContain("main system prompt");
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents-persona", "main:local");
 	});
 
-	it("re-verifies the pinned hash before running a directive", async () => {
+	it("refuses a switch whose definition changed after pinning", async () => {
 		const path = writeAgent(join(agentDir, "agents"), "changing");
 		await start();
 		writeFileSync(path, "---\nname: changing\ndescription: changed\ntools: [read, bash, write]\n---\n\nWidened.\n");
@@ -555,8 +556,7 @@ describe("# directive input handler", () => {
 		const result = await emitInput({ text: "#changing do it" });
 
 		expect(result).toEqual({ action: "handled" });
-		const details = harness.messages[0].message.details as { refusalReason?: string };
-		expect(details.refusalReason).toContain("changed since session start");
+		expect(harness.notificationText()).toContain("changed since session start");
 		expect(inProcessState.plans).toHaveLength(0);
 	});
 });
@@ -631,7 +631,7 @@ describe("# agent progress widget", () => {
 				release = resolve;
 			});
 
-		const run = harness.emit("input", { text: "#explorer find it", source: "interactive" });
+		const run = harness.emit("input", { text: "#[explorer] find it", source: "interactive" });
 		await vi.waitFor(() => expect(harness.widgets.has(WIDGET_KEY)).toBe(true));
 
 		const lines = progressComponent().render(80);
@@ -672,7 +672,7 @@ describe("# agent progress widget", () => {
 			new Promise<void>((resolve) => {
 				release = resolve;
 			});
-		const run = harness.emit("input", { text: "#explorer hi", source: "interactive" });
+		const run = harness.emit("input", { text: "#[explorer] hi", source: "interactive" });
 		await vi.waitFor(() => expect(harness.widgets.has(WIDGET_KEY)).toBe(true));
 
 		const call = harness.ui.setWidget.mock.calls.find(
@@ -694,7 +694,7 @@ describe("# agent progress widget", () => {
 				release = resolve;
 			});
 
-		const run = harness.emit("input", { text: "#explorer hi", source: "interactive" });
+		const run = harness.emit("input", { text: "#[explorer] hi", source: "interactive" });
 		await vi.waitFor(() => expect(harness.terminalHandlers.length).toBeGreaterThan(0));
 
 		const handler = harness.terminalHandlers[0];
@@ -714,7 +714,7 @@ describe("child telemetry", () => {
 		await start();
 		const seen: unknown[] = [];
 		const unsubscribe = harness.events.on(CHILD_TELEMETRY_CHANNEL, (data) => seen.push(data));
-		await harness.emit("input", { text: "#explorer hi", source: "interactive" });
+		await harness.emit("input", { text: "#[explorer] hi", source: "interactive" });
 		unsubscribe();
 
 		expect(seen).toHaveLength(1);
@@ -732,5 +732,361 @@ describe("child telemetry", () => {
 		expect(sinks).toHaveLength(2);
 		expect(sinks[0]?.delegationId).toBe(sinks[1]?.delegationId);
 		expect(sinks[0]?.delegationId).toMatch(/^[0-9a-f-]{36}$/);
+	});
+});
+
+describe("# main-session switching", () => {
+	async function emitInput(payload: Record<string, unknown>): Promise<unknown> {
+		return harness.emit("input", { source: "interactive", ...payload });
+	}
+
+	function lastSwitchEntry(): { data?: { name?: string | null } } | undefined {
+		return harness.branchEntries.filter((entry) => entry.customType === "mx-pi-agents.switch").at(-1) as
+			| { data?: { name?: string | null } }
+			| undefined;
+	}
+
+	it("switches with a task, returns transform and records the switch", async () => {
+		writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
+		await start();
+
+		const result = await emitInput({ text: "#style use tabs" });
+
+		expect(result).toEqual({ action: "transform", text: "use tabs" });
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents-persona", "persona:style");
+		expect(lastSwitchEntry()?.data).toMatchObject({ name: "style", kind: "persona" });
+	});
+
+	it("replaces the prompt prefix for a persona and appends for a main agent", async () => {
+		writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
+		writeAgent(join(agentDir, "agents"), "helper");
+		await start();
+
+		await emitInput({ text: "#style" });
+		const personaOptions: Record<string, unknown> = { customPrompt: undefined, appendSystemPrompt: "BASE" };
+		await harness.emit("before_agent_start", { systemPromptOptions: personaOptions, systemPrompt: "", prompt: "" });
+		expect(personaOptions.customPrompt).toBe("Body for style.");
+		expect(personaOptions.appendSystemPrompt).toBe("BASE");
+
+		await emitInput({ text: "#helper" });
+		const mainOptions: Record<string, unknown> = { customPrompt: undefined, appendSystemPrompt: "BASE" };
+		await harness.emit("before_agent_start", { systemPromptOptions: mainOptions, systemPrompt: "", prompt: "" });
+		expect(mainOptions.customPrompt).toBeUndefined();
+		expect(mainOptions.appendSystemPrompt).toBe("BASE\n\nBody for helper.");
+	});
+
+	it("resets to plain pi with #none and refuses a task", async () => {
+		writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
+		await start();
+		await emitInput({ text: "#style" });
+
+		const refused = await emitInput({ text: "#none do it" });
+		expect(refused).toEqual({ action: "handled" });
+		expect(harness.notificationText()).toContain("takes no task");
+
+		const result = await emitInput({ text: "#none" });
+		expect(result).toEqual({ action: "handled" });
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("mx-pi-agents-persona", undefined);
+		expect(lastSwitchEntry()?.data?.name).toBeNull();
+
+		const options: Record<string, unknown> = { customPrompt: undefined, appendSystemPrompt: "" };
+		await harness.emit("before_agent_start", { systemPromptOptions: options, systemPrompt: "", prompt: "" });
+		expect(options.customPrompt).toBeUndefined();
+	});
+
+	it("deactivates the switch when the definition changes mid-session", async () => {
+		const path = writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
+		await start();
+		await emitInput({ text: "#style" });
+		writeFileSync(path, "---\nname: style\ndescription: style description\nkind: persona\n---\n\nEVIL\n");
+
+		const options: Record<string, unknown> = { customPrompt: undefined, appendSystemPrompt: "" };
+		await harness.emit("before_agent_start", { systemPromptOptions: options, systemPrompt: "", prompt: "" });
+		expect(options.customPrompt).toBeUndefined();
+		expect(harness.notificationText()).toContain("main-prompt switch was cancelled");
+	});
+
+	it("rehydrates a persisted switch on session start", async () => {
+		writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
+		harness = createHarness({
+			cwd,
+			activeTools: ["read", "grep", "bash"],
+			branch: [
+				{
+					type: "custom",
+					customType: "mx-pi-agents.switch",
+					data: {
+						name: "style",
+						kind: "persona",
+						baseline: { tools: ["read", "grep", "bash"], model: undefined, thinking: "medium" },
+						applied: {},
+						switchedAt: 1,
+					},
+				},
+			],
+		});
+		mxPiAgents(harness.pi);
+		await start();
+
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents-persona", "persona:style");
+		const options: Record<string, unknown> = { customPrompt: undefined, appendSystemPrompt: "" };
+		await harness.emit("before_agent_start", { systemPromptOptions: options, systemPrompt: "", prompt: "" });
+		expect(options.customPrompt).toBe("Body for style.");
+	});
+
+	it("delegates a sub agent and refuses a bare sub", async () => {
+		writeAgent(join(agentDir, "agents"), "worker", "kind: sub\n");
+		await start();
+
+		const bare = await emitInput({ text: "#worker" });
+		expect(bare).toEqual({ action: "handled" });
+		expect(harness.notificationText()).toContain("needs a task");
+
+		const result = await emitInput({ text: "#worker do it" });
+		expect(result).toEqual({ action: "handled" });
+		expect(inProcessState.plans).toEqual([{ agentName: "worker", task: "do it" }]);
+		expect(harness.messages).toHaveLength(1);
+	});
+
+	it("refuses a persona as a child through the tool and a pipeline", async () => {
+		writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
+		await start();
+
+		const toolResult = (await harness.runTool("mx_pi_agent", { agent: "style", task: "do it" })) as ToolResult;
+		expect(textOf(toolResult)).toContain("main session");
+		expect(toolResult.isError).toBe(true);
+
+		await emitInput({ text: "#[style] do it" });
+		const details = harness.messages.at(-1)?.message.details as { refusalReason?: string };
+		expect(details.refusalReason).toContain("main session");
+	});
+});
+
+describe("mutation-hardening: index wiring", () => {
+	const emitInput = (payload: Record<string, unknown>) => harness.emit("input", { source: "interactive", ...payload });
+
+	it("publishes the tool metadata contract", () => {
+		const tool = harness.tools.get("mx_pi_agent") as unknown as Record<string, unknown>;
+		expect(tool.label).toBe("mx_pi_agent");
+		expect(tool.executionMode).toBe("parallel");
+		expect(tool.annotations).toEqual({
+			readOnlyHint: false,
+			destructiveHint: true,
+			idempotentHint: false,
+			openWorldHint: true,
+		});
+		expect(tool.namespace).toEqual({ name: "mx-pi-agents", description: "Secure agent delegation" });
+		expect(String(tool.description)).toContain("Delegate a task to a named agent");
+		expect(harness.commands.get("mx-pi-agents")?.description).toContain("Inspect and approve");
+	});
+
+	it("unavailable builds the failure result shape", () => {
+		const result = unavailable();
+		expect(result.agent).toBe("(none)");
+		expect(result.ok).toBe(false);
+		expect(result.stopped).toBe("child-error");
+		expect(result.errorMessage).toBe("unavailable");
+		expect(result.usage.input).toBe(0);
+	});
+
+	it("lists the roster for the empty and list commands", async () => {
+		writeAgent(join(agentDir, "agents"), "listed");
+		await start();
+		await harness.runCommand("");
+		expect(harness.notificationText()).toContain("listed");
+		harness.notifications.length = 0;
+		await harness.runCommand("list");
+		expect(harness.notificationText()).toContain("listed");
+	});
+
+	it("approves a named gated agent after confirmation", async () => {
+		writeAgent(join(cwd, ".pi", "agents"), "gated");
+		await start();
+		harness.ui.confirm.mockResolvedValue(true);
+		await harness.runCommand("approve gated");
+		expect(harness.notificationText()).toContain("approved 1 agent(s)");
+	});
+
+	it("reports unknown, empty and declined approvals", async () => {
+		await start();
+		await harness.runCommand("approve ghost");
+		expect(harness.notificationText()).toContain('No gated agent named "ghost"');
+		await harness.runCommand("approve");
+		expect(harness.notificationText()).toContain("No gated agents to approve.");
+
+		writeAgent(join(cwd, ".pi", "agents"), "gated");
+		await harness.runCommand("refresh");
+		harness.ui.confirm.mockResolvedValue(false);
+		await harness.runCommand("approve");
+		expect(harness.notificationText()).toContain("no approvals changed");
+	});
+
+	it("switches to a persona with a provider-qualified model", async () => {
+		writeAgent(join(agentDir, "agents"), "styled", "kind: persona\nmodel: anthropic/claude-sonnet-4-5\n");
+		await start();
+		const result = await emitInput({ text: "#styled" });
+		expect(result).toEqual({ action: "handled" });
+		expect(harness.notificationText()).toContain("switched to persona styled");
+	});
+
+	it("refuses a persona whose bare model does not resolve", async () => {
+		writeAgent(join(agentDir, "agents"), "styled", "kind: persona\nmodel: bare-model\n");
+		await start();
+		await emitInput({ text: "#styled" });
+		expect(harness.notificationText()).toContain("not available");
+	});
+
+	it("runs parallel and chain modes through the tool", async () => {
+		writeAgent(join(agentDir, "agents"), "alpha");
+		writeAgent(join(agentDir, "agents"), "beta");
+		await start();
+		const parallel = (await harness.runTool("mx_pi_agent", {
+			tasks: [
+				{ agent: "alpha", task: "t1" },
+				{ agent: "beta", task: "t2" },
+			],
+		})) as ToolResult;
+		expect(textOf(parallel)).toContain("handled:t1");
+		const chain = (await harness.runTool("mx_pi_agent", {
+			chain: [
+				{ agent: "alpha", task: "first" },
+				{ agent: "beta", task: "use {previous}" },
+			],
+		})) as ToolResult;
+		expect(textOf(chain)).toContain("handled:use handled:first");
+	});
+
+	it("refuses invalid tool parameters", async () => {
+		await start();
+		const result = (await harness.runTool("mx_pi_agent", {})) as ToolResult;
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain("Invalid parameters");
+	});
+
+	it("autocomplete delegates outside a directive and returns items inside one", async () => {
+		writeAgent(join(agentDir, "agents"), "wired");
+		await start();
+		const factory = harness.autocompleteFactories[0] as (current: unknown) => Record<string, unknown>;
+		const inner = { items: [{ value: "builtin" }], prefix: "" };
+		const current = {
+			getSuggestions: vi.fn(async () => inner),
+			applyCompletion: vi.fn(() => "applied"),
+			shouldTriggerFileCompletion: vi.fn(() => true),
+		};
+		const provider = factory(current);
+		const getSuggestions = provider.getSuggestions as (
+			lines: string[],
+			line: number,
+			col: number,
+			options: unknown,
+		) => Promise<unknown>;
+		expect(await getSuggestions(["hello"], 0, 5, {})).toBe(inner);
+		const inside = (await getSuggestions(["#wir"], 0, 4, {})) as { items: unknown[] };
+		expect(inside.items.length).toBeGreaterThan(0);
+		expect((provider.applyCompletion as (...args: unknown[]) => unknown)([], 0, 0, {}, "")).toBe("applied");
+		expect(
+			(provider.shouldTriggerFileCompletion as (lines: string[], line: number, col: number) => boolean)([], 0, 0),
+		).toBe(true);
+	});
+});
+
+describe("mutation-hardening: command and description strings", () => {
+	it("prints the full USAGE for invalid tool parameters", async () => {
+		await start();
+		const result = (await harness.runTool("mx_pi_agent", {})) as ToolResult;
+		const text = textOf(result);
+		expect(text).toContain("Usage: /mx-pi-agents");
+		expect(text).toContain("show the roster with source, trust and pinned hash");
+		expect(text).toContain("review and approve gated");
+		expect(text).toContain("show config path, limits and sandbox availability");
+		expect(text).toContain("re-pin the registry from disk");
+	});
+
+	it("prints USAGE for an unknown command", async () => {
+		await start();
+		await harness.runCommand("nonsense");
+		expect(harness.notificationText()).toContain("Usage: /mx-pi-agents");
+	});
+
+	it("describes the capability and modes in the tool description", () => {
+		const desc = harness.tools.get("mx_pi_agent")?.description ?? "";
+		expect(desc).toContain("out-of-scope read, write or search is refused");
+		expect(desc).toContain("single ({agent, task})");
+		expect(desc).toContain("parallel ({tasks: [...]}, max 8)");
+		expect(desc).toContain("chain ({chain: [...]}, {previous} substitution)");
+		expect(desc).toContain("project agents require approval");
+	});
+
+	it("status prints (none) for empty agent paths", async () => {
+		await start();
+		await harness.runCommand("status");
+		expect(harness.notificationText()).toContain("agentPaths: (none)");
+	});
+
+	it("parses repeated whitespace in command args", async () => {
+		writeAgent(join(cwd, ".pi", "agents"), "one");
+		harness = createHarness({ cwd, activeTools: ["read"], confirmResult: true });
+		mxPiAgents(harness.pi);
+		await start();
+		await harness.runCommand("approve   one");
+		expect(harness.notificationText()).toContain("approved 1 agent(s)");
+	});
+
+	it("approve with a name only targets that gated agent", async () => {
+		writeAgent(join(cwd, ".pi", "agents"), "one");
+		writeAgent(join(cwd, ".pi", "agents"), "two");
+		harness = createHarness({ cwd, activeTools: ["read"], confirmResult: true });
+		mxPiAgents(harness.pi);
+		await start();
+		await harness.runCommand("approve two");
+		expect(harness.notificationText()).toContain("approved 1 agent(s)");
+		const saved = JSON.parse(readFileSync(join(agentDir, "extensions", "mx-pi-agents.json"), "utf8")) as {
+			approvals: Record<string, Record<string, unknown>>;
+		};
+		const files = Object.values(saved.approvals).flatMap((byFile) => Object.keys(byFile));
+		expect(files).toEqual(["two.md"]);
+	});
+
+	it("renders (no output) when a result has no details and no text", () => {
+		const tool = harness.tools.get("mx_pi_agent");
+		const component = tool?.renderResult?.({ content: [], details: undefined }, {}, mockTheme, {}) as {
+			render: (width: number) => string[];
+		};
+		expect(component.render(80).join("\n")).toContain("(no output)");
+	});
+});
+
+describe("mutation-hardening: status, approvals and unavailable", () => {
+	it("status lists configured agentPaths", async () => {
+		const extensions = join(agentDir, "extensions");
+		mkdirSync(extensions, { recursive: true });
+		writeFileSync(
+			join(extensions, "mx-pi-agents.json"),
+			`${JSON.stringify({ version: 1, agentPaths: ["/custom/agents"], approvals: {}, limits: {} }, null, "\t")}\n`,
+		);
+		harness = createHarness({ cwd, activeTools: ["read"] });
+		mxPiAgents(harness.pi);
+		await start();
+		await harness.runCommand("status");
+		expect(harness.notificationText()).toContain("agentPaths: /custom/agents");
+	});
+
+	it("reports no gated agent for an unknown approve name", async () => {
+		writeAgent(join(cwd, ".pi", "agents"), "one");
+		harness = createHarness({ cwd, activeTools: ["read"], confirmResult: true });
+		mxPiAgents(harness.pi);
+		await start();
+		await harness.runCommand("approve ghost");
+		expect(harness.notificationText()).toContain('No gated agent named "ghost"');
+	});
+
+	it("unavailable returns the child-error shape", () => {
+		const result = unavailable();
+		expect(result.agent).toBe("(none)");
+		expect(result.ok).toBe(false);
+		expect(result.partial).toBe(false);
+		expect(result.truncated).toBe(false);
+		expect(result.text).toBe("");
+		expect(result.stopped).toBe("child-error");
 	});
 });

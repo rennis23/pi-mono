@@ -18,6 +18,7 @@ import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-ag
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunPlan } from "../types.js";
 import {
+	BUILTIN_TOOL_NAMES,
 	createChildResourceLoader,
 	createChildSettingsManager,
 	createInProcessRunner,
@@ -375,5 +376,24 @@ describe("runInProcess refusal paths (no model call)", () => {
 		controller.abort();
 		const result = await runner.run(planFor(), { signal: controller.signal, now: () => 0 });
 		expect(result.ok).toBe(false);
+	});
+});
+
+describe("in-process: survivor kills", () => {
+	it("pins the builtin tool names and project-scoped settings keys", () => {
+		expect(BUILTIN_TOOL_NAMES).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls"]);
+		expect(PROJECT_SCOPED_SETTINGS_KEYS).toEqual([
+			"shellCommandPrefix",
+			"shellPath",
+			"packages",
+			"extensions",
+			"skills",
+			"prompts",
+			"themes",
+		]);
+	});
+
+	it("rejects a blank agentDir", () => {
+		expect(() => createChildSettingsManager("   ")).toThrow(/non-empty agentDir/);
 	});
 });

@@ -62,6 +62,13 @@ export function approvalMatches(entry: ApprovalEntry | undefined, hash: string):
 	return entry !== undefined && entry.hash === hash;
 }
 
+/** One-line statement of what a gated definition would change in the main session. */
+function mainPromptConsequence(agent: PinnedAgent): string | undefined {
+	if (agent.definition.kind !== "persona" && agent.definition.kind !== "main") return undefined;
+	const name = sanitizeUiText(agent.definition.name, 64);
+	return `"${name}" [${agent.definition.kind}] can ${agent.definition.kind === "persona" ? "replace" : "extend"} the main system prompt and change tools, model and thinking for this session.`;
+}
+
 /** Build the request shown to the operator, or used in a headless refusal. */
 export function approvalRequest(agent: PinnedAgent): ApprovalRequest {
 	const directory = agent.source.directory;
@@ -69,18 +76,22 @@ export function approvalRequest(agent: PinnedAgent): ApprovalRequest {
 	const name = sanitizeUiText(agent.definition.name, 64);
 	const description = sanitizeUiText(agent.definition.description, 120);
 	const tools = agent.definition.tools ? sanitizeUiText(agent.definition.tools.join(", "), 200) : "(inherit rules)";
+	const lines = [
+		`Agent: ${name}`,
+		`Kind: ${agent.definition.kind}`,
+		`Description: ${description}`,
+		`Source: ${agent.source.kind} — ${sanitizeUiText(agent.source.path, 200)}`,
+		`Hash: ${agent.hash.slice(0, 12)}`,
+		`Tools: ${tools}`,
+		`Isolation: ${agent.definition.isolation}${agent.definition.sandbox === "os" ? " (sandboxed bash)" : ""}`,
+	];
+	const consequence = mainPromptConsequence(agent);
+	if (consequence !== undefined) lines.push(consequence);
 	return {
 		agent,
 		directory,
 		fileName,
-		summary: [
-			`Agent: ${name}`,
-			`Description: ${description}`,
-			`Source: ${agent.source.kind} — ${sanitizeUiText(agent.source.path, 200)}`,
-			`Hash: ${agent.hash.slice(0, 12)}`,
-			`Tools: ${tools}`,
-			`Isolation: ${agent.definition.isolation}${agent.definition.sandbox === "os" ? " (sandboxed bash)" : ""}`,
-		].join("\n"),
+		summary: lines.join("\n"),
 	};
 }
 

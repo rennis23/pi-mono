@@ -159,6 +159,38 @@ is **refused**, never silently unsandboxed.
 - Gated approvals store the exact approved hash. Any edit invalidates the
   approval and requires re-approval.
 
+### B6 — main-session switches are pinned and fail-closed (invariants 12–17)
+
+A `persona`/`main` definition can mutate the **main** session's system prompt,
+active tools, model and thinking level. The same pinning guarantees apply:
+
+- **12 — override provenance.** A main-session prompt override comes only from
+  the session's base options or from a pinned definition of a trusted or
+  approved source. `before_agent_start` re-reads the pinned definition and
+  re-hashes the file on every turn; a missing file or a changed hash
+  deactivates the switch and the base prompt is used. There is no branch that
+  keeps a stale override.
+- **13 — exact restore.** `#none` restores the pre-switch baseline (tools,
+  model, thinking) and the base prompt. A baseline value that no longer resolves
+  is skipped with a warning; the rest is still restored and the base prompt is
+  always reached.
+- **14 — personas never become children.** `planRun` refuses a `persona` before
+  any child session is created, so the tool, parallel, chain and pipeline paths
+  all refuse alike.
+- **15 — kind parsing is total.** Absent `kind` means `main`; an unknown or
+  non-string kind drops the definition with a diagnostic; the reserved name
+  `none` drops the definition so the reset can never be shadowed.
+- **16 — presentation.** Switch-derived UI text (status, notifications, roster,
+  autocomplete badges) is control-character stripped like all other
+  definition-derived text.
+- **17 — no child capability change.** A switch mutates main-session runtime
+  state only. Child grants continue to come from the unmodified `planRun`
+  contract; a switch can never widen a child's tool set.
+
+Switches are interactive-only. They are persisted as a non-context custom entry
+and rehydrated when a session is resumed; rehydration re-derives the prompt and
+only re-applies the preset when the live runtime still reflects the switch.
+
 ### Recursion
 
 - `MX_PI_AGENTS_CHILD=1` is set in every spawned child, and the extension returns

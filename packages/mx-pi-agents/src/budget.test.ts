@@ -202,3 +202,48 @@ describe("budgetStopReason", () => {
 		expect(budgetStopReason("cost")).toBe("budget-cost");
 	});
 });
+
+describe("budget: boundary hardening", () => {
+	it("usageTotal ignores negatives and NaN", () => {
+		expect(usageTotal({ ...zeroUsage(), input: -5, output: Number.NaN, cacheRead: 3, cacheWrite: 2 })).toBe(5);
+		expect(usageTotal(zeroUsage())).toBe(0);
+	});
+
+	it("check caches the first breach even when a later one is higher priority", () => {
+		const tracker = new BudgetTracker(budgets({ maxTurns: 0 }), () => 0);
+		tracker.noteTurn();
+		const first = tracker.check();
+		expect(first?.kind).toBe("turns");
+		tracker.noteUsage({ cost: 999 });
+		expect(tracker.check()).toBe(first);
+		expect(tracker.breach).toBe(first);
+	});
+
+	it("check reports time before tokens and cost", () => {
+		let clock = 0;
+		const tracker = new BudgetTracker(
+			budgets({ maxTurns: 10, timeoutMs: 5, tokenBudget: 10, costBudget: 0.5 }),
+			() => clock,
+		);
+		clock = 100;
+		expect(tracker.check()?.kind).toBe("time");
+	});
+
+	it("check enforces the opt-in cost budget with a strict inequality", () => {
+		const tracker = new BudgetTracker(budgets({ costBudget: 0.5 }), () => 0);
+		expect(tracker.check()).toBeUndefined();
+		tracker.noteUsage({ cost: 0.5 });
+		expect(tracker.check()).toBeUndefined();
+		tracker.noteUsage({ cost: 0.01 });
+		expect(tracker.check()?.kind).toBe("cost");
+	});
+
+	it("resolveBudgets tightens each field and keeps cost opt-in", () => {
+		expect(resolveBudgets({ maxTurns: 5 }, { maxTurns: 3 }).maxTurns).toBe(3);
+		expect(resolveBudgets({ maxTurns: 3 }, { maxTurns: 5 }).maxTurns).toBe(3);
+		expect(resolveBudgets(undefined, undefined).costBudget).toBeUndefined();
+		expect(resolveBudgets({ costBudget: 2 }, { costBudget: 1 }).costBudget).toBe(1);
+		expect(resolveBudgets({}, { costBudget: 1 }).costBudget).toBe(1);
+		expect(resolveBudgets({ costBudget: 1 }, {}).costBudget).toBe(1);
+	});
+});

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,6 +11,7 @@ import {
 	PATH_PARAM,
 	resolveScope,
 	ScopeRefusalError,
+	UNRESTRICTED_ROOT,
 } from "./scope.js";
 
 let root: string;
@@ -274,5 +275,151 @@ describe("PATH_PARAM", () => {
 	it("covers every bundled file tool with the `path` field", () => {
 		expect(Object.keys(PATH_PARAM).sort()).toEqual(["edit", "find", "grep", "ls", "read", "write"]);
 		for (const spec of Object.values(PATH_PARAM)) expect(spec.field).toBe("path");
+	});
+});
+
+describe("scope: survivor kills", () => {
+	it("names the ScopeRefusalError", () => {
+		const err = new ScopeRefusalError("nope");
+		expect(err.name).toBe("ScopeRefusalError");
+		expect(err.reason).toBe("scope-invalid");
+	});
+
+	it("uses the cwd default when the ceiling is an empty list", () => {
+		const cwd = dir("project");
+		expect(expectOk(resolveScope({ cwd, ceiling: [] })).roots).toEqual([cwd]);
+	});
+
+	it("accepts a ceiling where at least one entry contains the cwd", () => {
+		const cwd = dir("project");
+		const other = dir("other");
+		expect(expectOk(resolveScope({ cwd, ceiling: [other, cwd] })).roots).toEqual([cwd]);
+	});
+
+	it("names the ceiling in the cwd-outside-ceiling refusal", () => {
+		const cwd = dir("project");
+		const outcome = resolveScope({ cwd, ceiling: [dir("other")] });
+		expect(outcome.ok).toBe(false);
+		if (!outcome.ok) expect(outcome.message).toContain("outside the configured scope ceiling");
+	});
+
+	it("names the empty-scope refusal", () => {
+		const cwd = dir("project");
+		const outcome = resolveScope({ cwd, definitionScope: [] });
+		expect(outcome.ok).toBe(false);
+		if (!outcome.ok) expect(outcome.message).toContain("an empty scope is never");
+	});
+
+	it("names the cwd-itself refusal for cwd and empty entries", () => {
+		const cwd = dir("project");
+		for (const entry of [cwd, ""]) {
+			const outcome = resolveScope({ cwd, definitionScope: [entry] });
+			expect(outcome.ok).toBe(false);
+			if (!outcome.ok) expect(outcome.message).toContain("must be a subdirectory of the run cwd, not cwd itself");
+		}
+	});
+
+	it("names a / entry as an ancestor rather than an out-of-ceiling path", () => {
+		const cwd = dir("project");
+		const outcome = resolveScope({ cwd, definitionScope: ["/"] });
+		expect(outcome.ok).toBe(false);
+		if (!outcome.ok) expect(outcome.message).toContain("ancestor of cwd");
+	});
+
+	it("names the ancestor refusal with the real root", () => {
+		const cwd = dir("project");
+		const outcome = resolveScope({ cwd, definitionScope: [root] });
+		expect(outcome.ok).toBe(false);
+		if (!outcome.ok) {
+			expect(outcome.message).toContain("ancestor of cwd");
+			expect(outcome.message).toContain(realpathSync(root));
+		}
+	});
+
+	it("names a missing scope root", () => {
+		const cwd = dir("project");
+		const outcome = resolveScope({ cwd, definitionScope: [join(cwd, "missing")] });
+		expect(outcome.ok).toBe(false);
+		if (!outcome.ok) expect(outcome.message).toContain("not an existing directory");
+	});
+
+	it("accepts a scope root contained by any ceiling entry", () => {
+		const cwd = dir("ceiling", "project");
+		const sub = dir("ceiling", "sub");
+		const scope = expectOk(
+			resolveScope({ cwd, ceiling: [join(root, "ceiling"), dir("other")], definitionScope: [sub] }),
+		);
+		expect(scope.roots).toEqual([sub]);
+	});
+
+	it("names the out-of-ceiling scope root", () => {
+		const cwd = dir("project");
+		const outcome = resolveScope({ cwd, definitionScope: [dir("outside")] });
+		expect(outcome.ok).toBe(false);
+		if (!outcome.ok) expect(outcome.message).toContain("outside the configured scope ceiling");
+	});
+
+	it("states that an unconfineable run cannot be confined", () => {
+		const cwd = dir("project");
+		const outcome = resolveScope({ cwd, vector: { isolation: "process", sandbox: "none", tools: ["bash"] } });
+		expect(outcome.ok).toBe(false);
+		if (!outcome.ok) expect(outcome.message).toContain("cannot be confined to a narrow path scope");
+	});
+
+	it("includes the root (not host) in the assertPathInScope error", () => {
+		const root_ = dir("root");
+		try {
+			assertPathInScope([root_], join(root, "outside"), "read.path");
+			throw new Error("expected throw");
+		} catch (err) {
+			expect(err).toBeInstanceOf(ScopeRefusalError);
+			const message = (err as Error).message;
+			expect(message).toContain("is outside the run scope");
+			expect(message).toContain(root_);
+			expect(message).not.toContain("scope (host)");
+		}
+	});
+});
+
+describe("scope: boundary hardening", () => {
+	it("UNRESTRICTED_ROOT is the filesystem root", () => {
+		expect(UNRESTRICTED_ROOT).toBe("/");
+	});
+
+	it("isUnrestrictedCeiling is true when any entry is the root", () => {
+		const other = dir("x");
+		expect(isUnrestrictedCeiling([other, "/"])).toBe(true);
+		expect(isUnrestrictedCeiling([other])).toBe(false);
+	});
+
+	it("refuses the default cwd when it is outside the ceiling", () => {
+		const cwd = dir("project");
+		const other = dir("other");
+		expectRefusal(resolveScope({ cwd, ceiling: [other] }), "scope-invalid");
+	});
+
+	it("refuses a scope root that is an existing file", () => {
+		const cwd = dir("project");
+		const file = join(cwd, "file.txt");
+		writeFileSync(file, "x");
+		expectRefusal(resolveScope({ cwd, definitionScope: [file] }), "scope-invalid");
+	});
+
+	it("refuses / as a scope root because it is an ancestor of cwd", () => {
+		const cwd = dir("project");
+		expectRefusal(resolveScope({ cwd, definitionScope: ["/"] }), "scope-invalid");
+	});
+
+	it("describeScope returns the root path when cwd differs", () => {
+		const cwd = dir("project");
+		const other = dir("other");
+		expect(describeScope([other], false, cwd)).toBe(other);
+	});
+
+	it("PATH_PARAM records the read/write mode per tool", () => {
+		expect(PATH_PARAM.read.mode).toBe("read");
+		expect(PATH_PARAM.ls.mode).toBe("read");
+		expect(PATH_PARAM.write.mode).toBe("write");
+		expect(PATH_PARAM.edit.mode).toBe("write");
 	});
 });

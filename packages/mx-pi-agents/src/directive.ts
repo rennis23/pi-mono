@@ -25,14 +25,16 @@ export interface DirectiveStage {
 /** A parsed directive: the stages to run and the stage-1 task. */
 export interface Directive {
 	stages: DirectiveStage[];
-	/** Task for stage 1; later stages run `{previous}`. */
-	task: string;
+	/** Stage-1 task; `undefined` means the directive had no task text. */
+	task: string | undefined;
+	/** True for a bracketed `#[…]` pipeline; false for a bare `#name`. */
+	pipeline: boolean;
 }
 
 export type DirectiveOutcome = { ok: true; directive: Directive } | { ok: false; message: string };
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const USAGE = 'Usage: "#agent <prompt>" or "#[a > b, c] <prompt>"';
+const USAGE = 'Usage: "#agent [prompt]" or "#[a > b, c] <prompt>"';
 
 /**
  * Parse an editor input into a directive.
@@ -48,10 +50,6 @@ export function parseDirective(text: string): DirectiveOutcome | undefined {
 	const rest = text.slice(lead[0].length);
 	if (rest.startsWith("[")) return parsePipeline(rest.slice(1));
 	return parseSingle(rest);
-}
-
-function missingTask(name: string): DirectiveOutcome {
-	return { ok: false, message: `directive "#${name}" is missing a prompt. ${USAGE}` };
 }
 
 function parseSingle(rest: string): DirectiveOutcome {
@@ -80,12 +78,15 @@ function parseSingle(rest: string): DirectiveOutcome {
 		};
 	}
 
+	// A single name may stand alone: the kind decides whether it switches the
+	// main session (persona/main) or delegates (sub). Only pipelines require a
+	// task text.
 	const taskMatch = afterName.match(/^[ \t]+([\s\S]*)$/);
-	if (!taskMatch) return missingTask(name);
-	const task = taskMatch[1].trim();
-	if (task.length === 0) return missingTask(name);
-
-	return { ok: true, directive: { stages: [{ agents: [name] }], task } };
+	const task = taskMatch ? taskMatch[1].trim() : "";
+	return {
+		ok: true,
+		directive: { stages: [{ agents: [name] }], task: task.length > 0 ? task : undefined, pipeline: false },
+	};
 }
 
 function parsePipeline(body: string): DirectiveOutcome {
@@ -131,5 +132,5 @@ function parsePipeline(body: string): DirectiveOutcome {
 		stages.push({ agents });
 	}
 
-	return { ok: true, directive: { stages, task } };
+	return { ok: true, directive: { stages, task, pipeline: true } };
 }

@@ -16,6 +16,15 @@ import type { ChildTelemetrySink } from "./telemetry.js";
  */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
+/**
+ * What a definition is for.
+ *
+ * - `persona` replaces the main system prompt prefix via `#name`; never runs as a child.
+ * - `main` appends to the main system prompt via `#name`; may also run as a child.
+ * - `sub` is only usable as a child (tool, `#[…]`, or delegation).
+ */
+export type AgentKind = "persona" | "main" | "sub";
+
 /** How a child session is executed. */
 export type IsolationMode = "process" | "subprocess";
 
@@ -35,6 +44,8 @@ export type ToolsInheritance = "none" | "parent";
 export interface AgentDefinition {
 	name: string;
 	description: string;
+	/** What the definition is for. Absent frontmatter defaults to `main`. */
+	kind: AgentKind;
 	/**
 	 * Explicit grant set. `undefined` means the field was absent (inheritance
 	 * decides); `[]` means the field was present and empty (no tools).
@@ -130,6 +141,7 @@ export type RefusalReason =
 	| "recursion"
 	| "model-unavailable"
 	| "sandbox-unavailable"
+	| "persona-child"
 	| "invalid-request"
 	| "child-session";
 
@@ -201,6 +213,48 @@ export interface RunOptions {
 	 * Absent means no telemetry is collected or forwarded.
 	 */
 	telemetry?: ChildTelemetrySink;
+}
+
+/**
+ * Runtime state captured before the first main-session switch of a session.
+ * `#none` restores exactly this; it survives later switches.
+ */
+export interface SwitchBaseline {
+	tools: string[];
+	/** `provider/id` label, or undefined when no model was set. */
+	model: string | undefined;
+	thinking: ThinkingLevel | undefined;
+}
+
+/** The subset of baseline fields a switch declares and therefore changes. */
+export interface SwitchApplied {
+	tools?: string[];
+	model?: string;
+	thinking?: ThinkingLevel;
+}
+
+/**
+ * A `persona`/`main` switch plan produced by the pure persona module. The
+ * wiring layer applies it verbatim; it never interprets it.
+ */
+export interface SwitchPlan {
+	name: string;
+	kind: "persona" | "main";
+	/** How the definition body mutates the main system prompt. */
+	prompt: { mode: "replace" | "append"; body: string };
+	applied: SwitchApplied;
+}
+
+/**
+ * Persisted switch state (`customType: "mx-pi-agents.switch"`). A `name` of
+ * `null` is a reset entry. Entries never participate in LLM context.
+ */
+export interface SwitchEntryData {
+	name: string | null;
+	kind?: AgentKind;
+	baseline: SwitchBaseline;
+	applied?: SwitchApplied;
+	switchedAt: number;
 }
 
 /** Executes one planned run. Implementations: in-process and subprocess. */

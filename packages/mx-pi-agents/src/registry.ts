@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseAgentDefinition } from "./schema.js";
 import { sanitizeUiText, sha256Hex } from "./security.js";
-import type { AgentDiagnostic, AgentSource, PinnedAgent, RegistrySnapshot, SourceKind } from "./types.js";
+import type { AgentDiagnostic, AgentKind, AgentSource, PinnedAgent, RegistrySnapshot, SourceKind } from "./types.js";
 
 /** Discovery precedence, lowest to highest. Gated kinds may never shadow trusted ones. */
 export const SOURCE_ORDER: readonly SourceKind[] = ["bundled", "global", "config", "project"];
@@ -261,6 +261,7 @@ export function verifyPinned(agent: PinnedAgent): VerifyResult {
 export interface RosterEntry {
 	name: string;
 	description: string;
+	kind: AgentKind;
 	source: SourceKind;
 	path: string;
 	trusted: boolean;
@@ -275,6 +276,7 @@ export function rosterEntries(agents: readonly PinnedAgent[]): RosterEntry[] {
 	return agents.map((agent) => ({
 		name: sanitizeUiText(agent.definition.name, 64),
 		description: sanitizeUiText(agent.definition.description, 120),
+		kind: agent.definition.kind,
 		source: agent.source.kind,
 		path: sanitizeUiText(agent.source.path, 200),
 		trusted: agent.source.trusted,

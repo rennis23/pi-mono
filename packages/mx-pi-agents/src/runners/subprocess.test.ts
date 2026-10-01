@@ -7,6 +7,7 @@ import {
 	buildChildArgv,
 	CHILD_ENV_MARKER,
 	createSubprocessRunner,
+	describeChildCommand,
 	MAX_STDERR_BYTES,
 	parseChildLine,
 	readChildText,
@@ -394,5 +395,95 @@ describe("createSubprocessRunner", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("subprocess: boundary hardening", () => {
+	it("buildChildArgv disables tools or lists them", () => {
+		expect(buildChildArgv(plan({ noTools: "all" }), "/p")).toContain("--no-tools");
+		const listed = buildChildArgv(plan({ tools: ["read", "grep"] }), "/p");
+		expect(listed[listed.indexOf("--tools") + 1]).toBe("read,grep");
+		expect(listed).toContain("--append-system-prompt");
+		expect(listed[listed.length - 1]).toBe("/p");
+	});
+
+	it("buildChildArgv includes model and thinking when present", () => {
+		const args = buildChildArgv(plan({ model: "m", thinking: "high" }), "/p");
+		expect(args[args.indexOf("--model") + 1]).toBe("m");
+		expect(args[args.indexOf("--thinking") + 1]).toBe("high");
+	});
+
+	it("writeSystemPromptFile writes a 0600 file in a fresh 0700 dir", () => {
+		const { dir, path } = writeSystemPromptFile("evil\u0007name", "PROMPT");
+		try {
+			expect(statSync(dir).mode & 0o777).toBe(0o700);
+			expect(statSync(path).mode & 0o777).toBe(0o600);
+			expect(readFileSync(path, "utf8")).toBe("PROMPT");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("parseChildLine rejects blank, null and non-object JSON", () => {
+		expect(parseChildLine("")).toBeUndefined();
+		expect(parseChildLine("   ")).toBeUndefined();
+		expect(parseChildLine("not json")).toBeUndefined();
+		expect(parseChildLine("42")).toBeUndefined();
+		expect(parseChildLine("null")).toBeUndefined();
+		expect(parseChildLine('{"a":1}')).toEqual({ a: 1 });
+	});
+
+	it("readChildUsage only reads assistant usage", () => {
+		expect(readChildUsage({})).toEqual({});
+		expect(readChildUsage({ message: { role: "user", usage: { input: 1 } } })).toEqual({});
+		expect(readChildUsage({ message: { role: "assistant" } })).toEqual({});
+		expect(
+			readChildUsage({ message: { role: "assistant", usage: { input: 1, output: 2, cost: 0.5 } } }),
+		).toMatchObject({
+			input: 1,
+			output: 2,
+			cost: 0.5,
+		});
+		expect(
+			readChildUsage({ message: { role: "assistant", usage: { input: 1, cost: { total: 0.25 } } } }),
+		).toMatchObject({ cost: 0.25 });
+	});
+
+	it("readChildText handles string, array and invalid content", () => {
+		expect(readChildText({})).toBe("");
+		expect(readChildText({ message: { role: "user", content: "x" } })).toBe("");
+		expect(readChildText({ message: { role: "assistant", content: "hello" } })).toBe("hello");
+		expect(readChildText({ message: { role: "assistant", content: 5 } })).toBe("");
+		expect(
+			readChildText({ message: { role: "assistant", content: [{ type: "tool" }, { type: "text", text: "kept" }] } }),
+		).toBe("kept");
+	});
+
+	it("describeChildCommand shell-quotes each part", () => {
+		expect(describeChildCommand("pi", ["--mode", "json"])).toBe("'pi' '--mode' 'json'");
+	});
+});
+
+describe("subprocess: survivor kills", () => {
+	it("readChildText skips a non-text part that still carries text", () => {
+		expect(
+			readChildText({
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "tool_use", text: "x" },
+						{ type: "text", text: "ok" },
+					],
+				},
+			}),
+		).toBe("ok");
+	});
+
+	it("readChildText ignores null and string array entries", () => {
+		expect(
+			readChildText({
+				message: { role: "assistant", content: [null, "raw", { type: "text", text: "ok" }] },
+			}),
+		).toBe("ok");
 	});
 });

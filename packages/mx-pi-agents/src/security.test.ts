@@ -2,9 +2,8 @@
  * Security acceptance suite: one test per invariant in design §8.
  *
  * Each test names its invariant so a failure points directly at the property
- * that broke. Where an invariant is structural (a code path that must not
- * exist), the test asserts the structure rather than the behaviour, because
- * that is what makes the guarantee durable.
+ * that broke. Static source-text assertions live in `source-structure.test.ts`
+ * so they can be excluded from the instrumented Stryker sandbox.
  */
 
 import {
@@ -21,18 +20,31 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { makeAgent, makeSessionContext } from "../test/fixtures.js";
+import { makeAgent, makeSessionContext, mutateAgentFile } from "../test/fixtures.js";
+import { completionItems, toCompletionSource } from "./complete.js";
 import { aggregateResults, capText } from "./output.js";
+import { dispatchDirective, planReset, planSwitch } from "./persona.js";
 import { planRun } from "./policy.js";
 import { assembleSystemPrompt, MAX_SYSTEM_PROMPT_BYTES } from "./prompt.js";
 import { discoverAgents, verifyPinned } from "./registry.js";
+import { formatSwitchNotice, renderRosterLines } from "./render.js";
 import { buildGrantedTools } from "./runners/confine.js";
 import { createChildResourceLoader, createChildSettingsManager } from "./runners/in-process.js";
 import { buildBwrapArgv, buildSeatbeltProfile } from "./runners/sandbox.js";
 import { buildChildArgv, writeSystemPromptFile } from "./runners/subprocess.js";
 import { computeEffectiveTools, parseAgentDefinition } from "./schema.js";
 import { assertPathInScope, isPathInScope, resolveScope, ScopeRefusalError } from "./scope.js";
-import { isPathContained, safeTempName, sanitizeName, sanitizeUiText, sha256Hex } from "./security.js";
+import {
+	assertPathContained,
+	isPathContained,
+	realPathOfNearestExisting,
+	safeTempName,
+	sanitizeName,
+	sanitizeUiText,
+	sha256Hex,
+	shortHash,
+	stripControlChars,
+} from "./security.js";
 import { checkTrust } from "./trust.js";
 import { type RunPlan, zeroUsage } from "./types.js";
 
@@ -377,34 +389,9 @@ describe("invariant 7: child output is capped data that cannot trigger a parent 
 		expect(aggregate.truncated).toBe(true);
 		expect(Buffer.byteLength(aggregate.text, "utf8")).toBeLessThan(4500);
 	});
-
-	it("returns tool results as data; only an interactive directive can trigger a turn", async () => {
-		// Structural: the tool result path never pushes a session message. The one
-		// `pi.sendMessage` call is the user-initiated `#` directive, and it is
-		// gated on an interactive source earlier in the handler.
-		const source = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
-		expect(source).not.toContain("sendUserMessage(");
-		const sendIndex = source.indexOf("pi.sendMessage(");
-		expect(sendIndex).toBeGreaterThan(-1);
-		expect(source.indexOf("pi.sendMessage(", sendIndex + 1)).toBe(-1);
-		const gateIndex = source.indexOf('event.source !== "interactive"');
-		expect(gateIndex).toBeGreaterThan(-1);
-		expect(gateIndex).toBeLessThan(sendIndex);
-		expect(source).toContain("triggerTurn:");
-	});
 });
 
 describe("invariant 8: children cannot spawn children", () => {
-	it("refuses to register inside a marked child", async () => {
-		const source = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
-		expect(source).toContain("MX_PI_AGENTS_CHILD");
-		// The guard is a top-level early return, before any registration.
-		const guardIndex = source.indexOf("CHILD_ENV_MARKER] === CHILD_MARKER_VALUE");
-		const registerIndex = source.indexOf("registerTool({");
-		expect(guardIndex).toBeGreaterThan(-1);
-		expect(guardIndex).toBeLessThan(registerIndex);
-	});
-
 	it("has no mx_pi_agent in any bundled grant", () => {
 		const { agents } = discoverAgents({ agentDir, cwd: targetRepo, agentPaths: [] }, () => 1);
 		for (const agent of agents) {
@@ -627,6 +614,104 @@ describe("invariant 11: a run cannot touch a path outside its granted scope", ()
 	});
 });
 
+describe("invariant 12: a main-prompt override comes only from a pinned, re-hashed definition", () => {
+	it("plans the switch prompt from the pinned body, not the file", () => {
+		const agent = makeAgent({ name: "p", agentKind: "persona", body: "PINNED_BODY" });
+		const outcome = planSwitch(agent, { availableTools: ["read"], isModelAvailable: () => true });
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(outcome.plan.prompt.body).toBe("PINNED_BODY");
+	});
+
+	it("re-hashes per turn so a mid-session edit is detected", () => {
+		const agent = makeAgent({ name: "p", agentKind: "persona", body: "SAFE" });
+		expect(verifyPinned(agent).ok).toBe(true);
+		mutateAgentFile(agent, "---\nname: p\ndescription: p description\nkind: persona\n---\n\nEVIL\n");
+		const verified = verifyPinned(agent);
+		expect(verified.ok).toBe(false);
+		if (verified.ok) return;
+		expect(verified.reason).toBe("changed");
+	});
+});
+
+describe("invariant 13: #none restores the exact baseline or reports what it could not", () => {
+	it("restores the baseline and warns about values that no longer resolve", () => {
+		const plan = planReset(
+			{ tools: ["read", "gone"], model: "openai/gpt-none", thinking: "low" },
+			{ availableTools: ["read", "bash"], isModelAvailable: () => false },
+		);
+		expect(plan.tools).toEqual(["read"]);
+		expect(plan.model).toBeUndefined();
+		expect(plan.thinking).toBe("low");
+		expect(plan.warnings).toHaveLength(2);
+	});
+});
+
+describe("invariant 14: a persona can never run as a child", () => {
+	it("refuses a persona in planRun before any session exists", () => {
+		const agent = makeAgent({ name: "p", agentKind: "persona", tools: ["read"] });
+		const outcome = planRun(agent, "task", makeSessionContext({ availableTools: ["read"] }));
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.refusal.reason).toBe("persona-child");
+		expect(outcome.refusal.message).toContain("main session");
+	});
+});
+
+describe("invariant 15: kind parsing is total and fail-closed", () => {
+	it("defaults to main, drops unknown kinds and reserves none", () => {
+		const absent = parseAgentDefinition("---\nname: a\ndescription: d\n---\nbody");
+		expect(absent.ok).toBe(true);
+		if (!absent.ok) return;
+		expect(absent.definition.kind).toBe("main");
+
+		const unknown = parseAgentDefinition("---\nname: a\ndescription: d\nkind: sys\n---\nbody");
+		expect(unknown.ok).toBe(false);
+
+		const reserved = parseAgentDefinition("---\nname: none\ndescription: d\n---\nbody");
+		expect(reserved.ok).toBe(false);
+	});
+});
+
+describe("invariant 16: switch-derived UI text is control-character stripped", () => {
+	it("strips a hostile name from the switch notice, roster and autocomplete", () => {
+		const hostile = makeAgent({ name: "evil\u0007name", agentKind: "persona" });
+		const notice = formatSwitchNotice(hostile.definition.name, "persona");
+		const roster = renderRosterLines(
+			[
+				{
+					name: `evil\u0007name`,
+					kind: "persona",
+					source: "global",
+					trusted: true,
+					hash: "h",
+					description: "d\u001b[31m",
+				},
+			],
+			{ fg: (_color, text) => text },
+		).join("\n");
+		const completions = completionItems(toCompletionSource([hostile]), { mode: "single", prefix: "#" })
+			.map((item) => item.label)
+			.join("\n");
+		for (const text of [notice, roster, completions]) {
+			expect(text).not.toMatch(/[\u0000-\u0009\u000B-\u001F]/);
+		}
+	});
+});
+
+describe("invariant 17: a main-session switch never alters a child plan", () => {
+	it("plans a main-kind child with the unchanged child policy contract", () => {
+		const agent = makeAgent({ name: "m", agentKind: "main", tools: ["read"] });
+		const outcome = planRun(agent, "task", makeSessionContext({ availableTools: ["read"] }));
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(outcome.plan.tools).toEqual(["read"]);
+		// The switch module only decides main-session runtime state; child grants
+		// still come from the policy module's total contract.
+		expect(dispatchDirective({ name: "m", kind: "main", hasTask: true })).toEqual({ action: "switch", kind: "main" });
+	});
+});
+
 describe("supporting controls", () => {
 	it("hashes definition content deterministically", () => {
 		expect(sha256Hex("abc")).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
@@ -641,10 +726,165 @@ describe("supporting controls", () => {
 	});
 
 	it("refuses a gated agent with no stored approval in a headless session", () => {
-		const agent = makeAgent({ name: "gated", tools: ["read"], kind: "project" });
+		const agent = makeAgent({ name: "gated", tools: ["read"], sourceKind: "project" });
 		const decision = checkTrust(agent, { hasUI: false, approvals: {}, now: () => 1 });
 		expect(decision.ok).toBe(false);
 		if (decision.ok) return;
 		expect(decision.refusal.reason).toBe("unapproved-project-agent");
+	});
+});
+
+describe("security helpers: boundary hardening", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "mx-sec-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("stripControlChars keeps tab and strips every other control", () => {
+		expect(stripControlChars("a\tb")).toBe("a\tb");
+		expect(stripControlChars("a\u0000b\u007fc\u0085d")).toBe("abcd");
+	});
+
+	it("stripControlChars strips newline by default and keeps it when asked", () => {
+		expect(stripControlChars("a\nb")).toBe("ab");
+		expect(stripControlChars("a\nb", { keepNewlines: true })).toBe("a\nb");
+		expect(stripControlChars("a\rb")).toBe("ab");
+	});
+
+	it("sanitizeUiText does not truncate at exactly the limit", () => {
+		expect(sanitizeUiText("abc", 3)).toBe("abc");
+	});
+
+	it("sanitizeUiText truncates to the limit with an ellipsis", () => {
+		expect(sanitizeUiText("abcd", 3)).toBe("ab…");
+		expect(sanitizeUiText("abcd", 1)).toBe("…");
+		expect(sanitizeUiText("abc", 2.9)).toBe("a…");
+	});
+
+	it("sanitizeUiText returns empty for a zero or negative limit", () => {
+		expect(sanitizeUiText("abc", 0)).toBe("");
+		expect(sanitizeUiText("abc", -1)).toBe("");
+	});
+
+	it("sanitizeUiText collapses whitespace and a stripped newline", () => {
+		expect(sanitizeUiText("a   b")).toBe("a b");
+		expect(sanitizeUiText("a\nb")).toBe("ab");
+		expect(sanitizeUiText("  padded  ")).toBe("padded");
+		expect(sanitizeUiText("a\u0007b")).toBe("ab");
+	});
+
+	it("sanitizeName collapses hyphens and trims the edges", () => {
+		expect(sanitizeName("a---b")).toBe("a-b");
+		expect(sanitizeName("-a-")).toBe("a");
+		expect(sanitizeName("--")).toBe("agent");
+	});
+
+	it("sanitizeName maps disallowed characters to hyphens", () => {
+		expect(sanitizeName("a b/c")).toBe("a-b-c");
+		expect(sanitizeName("Hello World")).toBe("hello-world");
+	});
+
+	it("sanitizeName removes a newline without inserting a hyphen", () => {
+		expect(sanitizeName("A\nB")).toBe("ab");
+	});
+
+	it("sanitizeName falls back to agent for empty or zero-length output", () => {
+		expect(sanitizeName("")).toBe("agent");
+		expect(sanitizeName("x", 0)).toBe("agent");
+		expect(sanitizeName("x", -5)).toBe("agent");
+		expect(sanitizeName("abcdef", 3)).toBe("abc");
+	});
+
+	shortHashTests();
+
+	it("safeTempName collapses dot runs and strips leading dots", () => {
+		expect(safeTempName("a..b")).toBe("a.b");
+		expect(safeTempName("..a")).toBe("a");
+		expect(safeTempName("...")).toBe("agent");
+	});
+
+	it("safeTempName maps separators and spaces to underscores", () => {
+		expect(safeTempName("a/b")).toBe("a_b");
+		expect(safeTempName("a b")).toBe("a_b");
+	});
+
+	it("safeTempName caps at 64 characters and falls back to agent", () => {
+		expect(safeTempName("x".repeat(70))).toHaveLength(64);
+		expect(safeTempName("")).toBe("agent");
+	});
+
+	it("realPathOfNearestExisting returns an existing realpath unchanged", () => {
+		const real = realpathSync(tmp);
+		expect(realPathOfNearestExisting(real)).toBe(real);
+	});
+
+	it("realPathOfNearestExisting re-appends missing trailing segments", () => {
+		const real = realpathSync(tmp);
+		const missing = join(real, "a", "b");
+		expect(realPathOfNearestExisting(missing)).toBe(missing);
+	});
+
+	it("isPathContained is false for a nonexistent root", () => {
+		expect(isPathContained(join(tmp, "nope"), join(tmp, "nope", "x"))).toBe(false);
+	});
+
+	it("isPathContained accepts the root itself and a not-yet-existing child", () => {
+		expect(isPathContained(tmp, tmp)).toBe(true);
+		expect(isPathContained(tmp, join(tmp, "a", "b.txt"))).toBe(true);
+	});
+
+	it("isPathContained refuses a sibling that shares a name prefix", () => {
+		const sibling = `${tmp}-sibling`;
+		mkdirSync(sibling, { recursive: true });
+		try {
+			expect(isPathContained(tmp, join(sibling, "f"))).toBe(false);
+		} finally {
+			rmSync(sibling, { recursive: true, force: true });
+		}
+	});
+
+	it("isPathContained treats / as containing every path", () => {
+		expect(isPathContained("/", "/etc/hosts")).toBe(true);
+		expect(isPathContained("/", "/")).toBe(true);
+	});
+
+	it("assertPathContained throws for a path outside the root, naming the label", () => {
+		expect(() => assertPathContained(tmp, "/etc/hosts", "read.path")).toThrow(/read\.path escaped/);
+	});
+
+	it("assertPathContained does not throw for a contained path", () => {
+		expect(() => assertPathContained(tmp, join(tmp, "f"), "read.path")).not.toThrow();
+	});
+});
+
+function shortHashTests(): void {
+	describe("shortHash", () => {
+		it("lowercases and truncates without padding", () => {
+			expect(shortHash("ABCDEF0123456789", 4)).toBe("abcd");
+			expect(shortHash("ABC", 12)).toBe("abc");
+			expect(shortHash("abcdef", 3.9)).toBe("abc");
+		});
+
+		it("returns empty for zero or negative lengths", () => {
+			expect(shortHash("abcdef", 0)).toBe("");
+			expect(shortHash("abcdefghij", -5)).toBe("");
+		});
+	});
+}
+
+describe("security: survivor kills", () => {
+	it("collapses hyphen runs and trims edge hyphens in sanitizeName", () => {
+		expect(sanitizeName("a--b")).toBe("a-b");
+		expect(sanitizeName("-a-")).toBe("a");
+		expect(sanitizeName("--a--b--")).toBe("a-b");
+	});
+
+	it("collapses interior whitespace runs in sanitizeUiText", () => {
+		expect(sanitizeUiText("a  \t b")).toBe("a b");
 	});
 });

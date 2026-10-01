@@ -580,3 +580,183 @@ describe("step lifecycle (onStep)", () => {
 		expect(collected.events[1]).toEqual({ phase: "settle", stage: 0, agent: "explorer", ok: false });
 	});
 });
+
+describe("modes: boundary hardening", () => {
+	it("refusal results carry the child-error shape", async () => {
+		const outcome = await runSingle({ agent: "ghost", task: "x" }, deps(), options);
+		const [failure] = outcome.results;
+		expect(failure.agent).toBe("ghost");
+		expect(failure.ok).toBe(false);
+		expect(failure.partial).toBe(false);
+		expect(failure.stopped).toBe("child-error");
+	});
+
+	it("runParallel rejects too many tasks", async () => {
+		const steps: DelegationStep[] = Array.from({ length: 9 }, () => ({ agent: "explorer", task: "t" }));
+		const outcome = await runParallel(steps, deps(), options);
+		expect(outcome.refusal?.reason).toBe("invalid-request");
+		expect(outcome.results).toEqual([]);
+	});
+
+	it("runParallel keeps failed steps as data", async () => {
+		const stub = stubRunner((plan, index) => result(plan.agentName, "x", index !== 0));
+		const outcome = await runParallel(
+			[
+				{ agent: "explorer", task: "a" },
+				{ agent: "reviewer", task: "b" },
+			],
+			deps({ selectRunner: () => stub.runner }),
+			options,
+		);
+		expect(outcome.results.map((entry) => entry.ok)).toEqual([false, true]);
+	});
+
+	it("runChain substitutes {previous} and stops on the first failure", async () => {
+		const stub = stubRunner((plan) => result(plan.agentName, `out:${plan.task}`));
+		const outcome = await runChain(
+			[
+				{ agent: "explorer", task: "first" },
+				{ agent: "reviewer", task: "uses {previous}" },
+			],
+			deps({ selectRunner: () => stub.runner }),
+			options,
+		);
+		expect(outcome.results[1].text).toBe("out:uses out:first");
+		expect(outcome.stoppedAt).toBeUndefined();
+
+		const failing = stubRunner((plan, index) => result(plan.agentName, "x", index !== 0));
+		const stopped = await runChain(
+			[
+				{ agent: "explorer", task: "first" },
+				{ agent: "reviewer", task: "second" },
+			],
+			deps({ selectRunner: () => failing.runner }),
+			options,
+		);
+		expect(stopped.stoppedAt).toBe(0);
+		expect(stopped.results).toHaveLength(1);
+	});
+
+	it("runPipeline validates the stage count", async () => {
+		const tooFew = await runPipeline([], "task", deps(), options);
+		expect(tooFew.refusal?.reason).toBe("invalid-request");
+		const tooMany = await runPipeline(
+			Array.from({ length: 17 }, () => ({ agents: ["explorer"] })),
+			"task",
+			deps(),
+			options,
+		);
+		expect(tooMany.refusal?.message).toContain("1..16");
+	});
+
+	it("runPipeline cascades {previous} through single-agent stages", async () => {
+		const stub = stubRunner((plan) => result(plan.agentName, `out:${plan.task}`));
+		const outcome = await runPipeline(
+			[{ agents: ["explorer"] }, { agents: ["reviewer"] }],
+			"first",
+			deps({ selectRunner: () => stub.runner }),
+			options,
+		);
+		expect(outcome.results[0].text).toBe("out:first");
+		expect(outcome.results[1].text).toBe("out:out:first");
+		expect(outcome.stoppedAt).toBeUndefined();
+	});
+
+	it("runPipeline stops a failed single stage and runs parallel groups", async () => {
+		const failing = stubRunner((plan, index) => result(plan.agentName, "x", index !== 0));
+		const stopped = await runPipeline(
+			[{ agents: ["explorer"] }, { agents: ["reviewer"] }],
+			"first",
+			deps({ selectRunner: () => failing.runner }),
+			options,
+		);
+		expect(stopped.stoppedAt).toBe(0);
+
+		const group = stubRunner((plan) => result(plan.agentName, `out:${plan.task}`));
+		const combined = await runPipeline(
+			[{ agents: ["explorer", "reviewer"] }],
+			"first",
+			deps({ selectRunner: () => group.runner }),
+			options,
+		);
+		expect(combined.results).toHaveLength(2);
+	});
+
+	it("displayTask substitutes {previous} with an ellipsis and trims", () => {
+		expect(displayTask("  use {previous} now  ")).toBe("use … now");
+	});
+});
+
+describe("modes: survivor kills", () => {
+	it("shapes a refusal result with (none), empty text and false flags", async () => {
+		const outcome = await runSingle({ agent: "ghost", task: "t" }, deps(), options);
+		const [refusalResult] = outcome.results;
+		expect(refusalResult.agent).toBe("ghost");
+		expect(refusalResult.partial).toBe(false);
+		expect(refusalResult.truncated).toBe(false);
+		expect(refusalResult.text).toContain("Refused");
+	});
+
+	it("lists the available agents in the unknown-agent refusal", async () => {
+		const outcome = await runSingle({ agent: "ghost", task: "t" }, deps(), options);
+		expect(outcome.refusal?.message).toContain("explorer, reviewer, builder");
+	});
+
+	it("shapes a runner throw as an empty, non-partial result", async () => {
+		const runner: Runner = {
+			kind: "process",
+			async run() {
+				throw new Error("kaboom");
+			},
+		};
+		const outcome = await runSingle({ agent: "explorer", task: "t" }, deps({ selectRunner: () => runner }), options);
+		expect(outcome.results[0].partial).toBe(false);
+		expect(outcome.results[0].truncated).toBe(false);
+		expect(outcome.results[0].text).toBe("");
+		expect(outcome.results[0].errorMessage).toBe("kaboom");
+	});
+
+	it("starts a chain with an empty previous value", async () => {
+		const stub = stubRunner((plan) => result(plan.agentName, "x"));
+		const outcome = await runChain(
+			[{ agent: "explorer", task: "do {previous} now" }],
+			deps({ selectRunner: () => stub.runner }),
+			options,
+		);
+		expect(outcome.results).toHaveLength(1);
+		expect(stub.plans[0].task).toBe("do  now");
+	});
+
+	it("accepts exactly the maximum number of pipeline stages", async () => {
+		const stages = Array.from({ length: 16 }, () => ({ agents: ["explorer"] }));
+		const outcome = await runPipeline(stages, "go", deps(), options);
+		expect(outcome.refusal).toBeUndefined();
+		expect(outcome.results).toHaveLength(16);
+	});
+
+	it("refuses a stage above the task cap with a stage-specific message", async () => {
+		const outcome = await runPipeline(
+			[{ agents: Array.from({ length: 9 }, () => "explorer") }],
+			"go",
+			deps(),
+			options,
+		);
+		expect(outcome.refusal?.reason).toBe("invalid-request");
+		expect(outcome.refusal?.message).toContain("invalid pipeline stage:");
+	});
+
+	it("propagates authorize diagnostics in chain and pipeline", async () => {
+		const authorize = () => ({
+			ok: false as const,
+			refusal: {
+				reason: "unapproved-project-agent" as const,
+				message: "gated",
+				diagnostics: [{ level: "info" as const, message: "from-auth" }],
+			},
+		});
+		const chain = await runChain([{ agent: "explorer", task: "t" }], deps({ authorize }), options);
+		expect(chain.diagnostics.some((d) => d.message === "from-auth")).toBe(true);
+		const pipeline = await runPipeline([{ agents: ["explorer"] }], "t", deps({ authorize }), options);
+		expect(pipeline.diagnostics.some((d) => d.message === "from-auth")).toBe(true);
+	});
+});

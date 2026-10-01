@@ -140,3 +140,185 @@ describe("renderProgress", () => {
 		}
 	});
 });
+
+describe("progress: survivor kills", () => {
+	it("pins the spinner frame sequence", () => {
+		expect(SPINNER_FRAMES).toEqual(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]);
+	});
+
+	it("stays active while any unit is still waiting or running", () => {
+		const model: ProgressModel = {
+			stages: [
+				{
+					units: [
+						{ id: 0, agent: "a", status: "waiting" },
+						{ id: 1, agent: "b", status: "done" },
+					],
+				},
+			],
+		};
+		expect(renderProgress(model, theme, 0)[0]).toContain(`  ${SPINNER_FRAMES[0]}`);
+	});
+
+	it("a failed+done stage is failed", () => {
+		const model: ProgressModel = {
+			stages: [
+				{
+					units: [
+						{ id: 0, agent: "a", status: "failed" },
+						{ id: 1, agent: "b", status: "done" },
+					],
+				},
+			],
+		};
+		const joined = renderProgress(model, theme, 0).join("\n");
+		expect(joined).toContain("✗");
+		expect(joined).toContain("failed");
+	});
+
+	it("a cancelled+waiting stage is waiting, not cancelled", () => {
+		const model: ProgressModel = {
+			stages: [
+				{
+					units: [
+						{ id: 0, agent: "a", status: "cancelled" },
+						{ id: 1, agent: "b", status: "waiting" },
+					],
+				},
+			],
+		};
+		const joined = renderProgress(model, theme, 0).join("\n");
+		expect(joined).toContain("waiting");
+		expect(joined).not.toContain("⊘");
+	});
+});
+describe("progress: boundary hardening", () => {
+	it("createProgress assigns increasing ids across stages", () => {
+		const model = createProgress([{ agents: ["a", "b"] }, { agents: ["c"] }]);
+		expect(model.stages[0].units.map((u) => u.id)).toEqual([0, 1]);
+		expect(model.stages[1].units.map((u) => u.id)).toEqual([2]);
+		expect(model.stages[0].units.every((u) => u.status === "waiting")).toBe(true);
+	});
+
+	it("markRunning targets the first waiting unit, then falls back to any", () => {
+		const model = createProgress([{ agents: ["a", "a"] }]);
+		markRunning(model, 0, "a");
+		expect(model.stages[0].units.map((u) => u.status)).toEqual(["running", "waiting"]);
+		markRunning(model, 0, "a");
+		expect(model.stages[0].units.map((u) => u.status)).toEqual(["running", "running"]);
+	});
+
+	it("markRunning prefers a waiting unit over an already-running one", () => {
+		const model: ProgressModel = {
+			stages: [
+				{
+					units: [
+						{ id: 0, agent: "a", status: "running" },
+						{ id: 1, agent: "a", status: "waiting" },
+					],
+				},
+			],
+		};
+		markRunning(model, 0, "a");
+		expect(model.stages[0].units.map((u) => u.status)).toEqual(["running", "running"]);
+	});
+
+	it("markRunning is a no-op for an unknown stage or agent", () => {
+		const model = createProgress([{ agents: ["a"] }]);
+		markRunning(model, 5, "a");
+		markRunning(model, 0, "ghost");
+		expect(model.stages[0].units[0].status).toBe("waiting");
+	});
+
+	it("markSettled settles running first, then waiting, and maps ok", () => {
+		const model = createProgress([{ agents: ["a", "a"] }]);
+		markRunning(model, 0, "a");
+		markSettled(model, 0, "a", true);
+		expect(model.stages[0].units.map((u) => u.status)).toEqual(["done", "waiting"]);
+		markSettled(model, 0, "a", false);
+		expect(model.stages[0].units.map((u) => u.status)).toEqual(["done", "failed"]);
+		markSettled(model, 0, "ghost", true);
+		expect(model.stages[0].units.map((u) => u.status)).toEqual(["done", "failed"]);
+	});
+
+	it("markRemaining settles every waiting and running unit", () => {
+		const model = createProgress([{ agents: ["a"] }, { agents: ["b", "c"] }]);
+		markRunning(model, 0, "a");
+		markSettled(model, 0, "a", true);
+		markRunning(model, 1, "b");
+		markRemaining(model, "cancelled");
+		expect(model.stages.map((s) => s.units.map((u) => u.status))).toEqual([["done"], ["cancelled", "cancelled"]]);
+	});
+
+	it("progressCounts counts done over total", () => {
+		const model = createProgress([{ agents: ["a", "b"] }, { agents: ["c"] }]);
+		markRunning(model, 0, "a");
+		markSettled(model, 0, "a", true);
+		markRunning(model, 0, "b");
+		markSettled(model, 0, "b", false);
+		expect(progressCounts(model)).toEqual({ done: 1, total: 3 });
+	});
+
+	it("renderProgress spins only while active and wraps the frame", () => {
+		const model = createProgress([{ agents: ["a"] }]);
+		expect(renderProgress(model, theme, SPINNER_FRAMES.length)).toEqual(renderProgress(model, theme, 0));
+		markRunning(model, 0, "a");
+		markSettled(model, 0, "a", true);
+		const finished = renderProgress(model, theme, 0);
+		expect(finished[0]).toContain("● Agents (1/1)");
+		expect(finished[0]).not.toContain("  ");
+	});
+
+	it("renderProgress renders every status glyph and label", () => {
+		const model: ProgressModel = {
+			stages: [
+				{ units: [{ id: 0, agent: "w", status: "waiting" }] },
+				{ units: [{ id: 1, agent: "r", status: "running" }] },
+				{ units: [{ id: 2, agent: "d", status: "done" }] },
+				{ units: [{ id: 3, agent: "f", status: "failed" }] },
+				{ units: [{ id: 4, agent: "c", status: "cancelled" }] },
+			],
+		};
+		const joined = renderProgress(model, theme, 0).join("\n");
+		for (const glyph of ["○", "◐", "✓", "✗", "⊘"]) expect(joined).toContain(glyph);
+		for (const label of ["waiting", "running", "done", "failed", "cancelled"]) expect(joined).toContain(label);
+	});
+
+	it("stageStatus precedence and the partial-done label", () => {
+		const mixed: ProgressModel = {
+			stages: [
+				{
+					units: [
+						{ id: 0, agent: "a", status: "done" },
+						{ id: 1, agent: "b", status: "waiting" },
+					],
+				},
+			],
+		};
+		expect(renderProgress(mixed, theme, 0).join("\n")).toContain("1/2 done");
+
+		const runningBeatsFailed: ProgressModel = {
+			stages: [
+				{
+					units: [
+						{ id: 0, agent: "a", status: "failed" },
+						{ id: 1, agent: "b", status: "running" },
+					],
+				},
+			],
+		};
+		expect(renderProgress(runningBeatsFailed, theme, 0).join("\n")).toContain("running");
+
+		const cancelledWithDone: ProgressModel = {
+			stages: [
+				{
+					units: [
+						{ id: 0, agent: "a", status: "cancelled" },
+						{ id: 1, agent: "b", status: "done" },
+					],
+				},
+			],
+		};
+		expect(renderProgress(cancelledWithDone, theme, 0).join("\n")).toContain("cancelled");
+	});
+});

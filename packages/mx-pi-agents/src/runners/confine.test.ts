@@ -148,3 +148,28 @@ describe("buildGrantedTools", () => {
 		expect(defs).toEqual([]);
 	});
 });
+
+describe("confine: survivor kills", () => {
+	it("throws for a tool with no registered path parameter", () => {
+		expect(() =>
+			confineToolDefinition(fakeDefinition("bash"), { cwd: inside, roots: [inside], mode: "read" }),
+		).toThrow(/no path parameter registered/);
+	});
+
+	it("names the parameter-shape failures", async () => {
+		const wrapped = confineToolDefinition(fakeDefinition("read"), { cwd: inside, roots: [inside], mode: "read" });
+		await expect(wrapped.execute("c", null as never, undefined, undefined, ctx)).rejects.toThrow(
+			"parameters are not an object",
+		);
+		await expect(wrapped.execute("c", { path: 42 } as never, undefined, undefined, ctx)).rejects.toThrow(
+			"path must be a string",
+		);
+	});
+
+	it("labels the scope refusal with the tool and field", async () => {
+		const wrapped = confineToolDefinition(fakeDefinition("read"), { cwd: inside, roots: [inside], mode: "read" });
+		await expect(wrapped.execute("c", { path: join(outside, "f") }, undefined, undefined, ctx)).rejects.toThrow(
+			/read\.path/,
+		);
+	});
+});

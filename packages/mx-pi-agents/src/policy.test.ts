@@ -23,6 +23,7 @@ function makeAgent(overrides: Partial<AgentDefinition> = {}, kind: SourceKind = 
 	const definition: AgentDefinition = {
 		name: "reviewer",
 		description: "review things",
+		kind: "main",
 		tools: ["read", "grep"],
 		toolsInheritance: "none",
 		scope: undefined,
@@ -261,5 +262,161 @@ describe("describePlan", () => {
 		expect(text).toContain("tools=read,grep");
 		expect(text).toContain("isolation=process");
 		expect(text).toContain("scope=cwd");
+	});
+});
+
+describe("policy: boundary hardening", () => {
+	it("refuses a persona agent before anything else", () => {
+		const outcome = planRun(makeAgent({ kind: "persona" }), "task", context());
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.refusal.reason).toBe("persona-child");
+	});
+
+	it("refuses a spawn-capable grant", () => {
+		const outcome = planRun(makeAgent({ tools: ["read", "subagent"] }), "task", context());
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.refusal.reason).toBe("spawn-tool-grant");
+	});
+
+	it("refuses an unresolved explicit tool", () => {
+		const outcome = planRun(makeAgent({ tools: ["read", "ghost"] }), "task", context());
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.refusal.reason).toBe("unresolved-tool");
+	});
+
+	it("refuses an unavailable model and an unavailable sandbox", () => {
+		const model = planRun(makeAgent({ model: "ghost/model" }), "task", context({ isModelAvailable: () => false }));
+		expect(model.ok).toBe(false);
+		if (!model.ok) expect(model.refusal.reason).toBe("model-unavailable");
+		const sandbox = planRun(makeAgent({ sandbox: "os" }), "task", context({ sandboxAvailable: false }));
+		expect(sandbox.ok).toBe(false);
+		if (!sandbox.ok) expect(sandbox.refusal.reason).toBe("sandbox-unavailable");
+	});
+
+	it("refuses an empty task", () => {
+		const outcome = planRun(makeAgent(), "   ", context());
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.refusal.reason).toBe("invalid-request");
+	});
+
+	it("refuses an unconfineable vector under the default ceiling", () => {
+		const outcome = planRun(makeAgent({ tools: ["bash"] }), "task", context());
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.refusal.reason).toBe("scope-unenforceable");
+	});
+
+	it("licenses an unconfined run under a / ceiling with an info diagnostic", () => {
+		const plan = expectPlan(
+			planRun(
+				makeAgent({ tools: ["bash"], isolation: "process", sandbox: "none" }),
+				"task",
+				context({ scopeCeiling: ["/"] }),
+			),
+		);
+		expect(plan.scope.unrestricted).toBe(true);
+		expect(plan.diagnostics.some((d) => d.message.includes("unconfined"))).toBe(true);
+	});
+
+	it("describeRefusal lists diagnostics and describePlan summarises", () => {
+		const refusal = {
+			reason: "invalid-request" as const,
+			message: "task must not be empty",
+			diagnostics: [{ level: "info" as const, message: "note" }],
+		};
+		expect(describeRefusal(refusal)).toContain("Refused (invalid-request): task must not be empty");
+		expect(describeRefusal(refusal)).toContain("- info: note");
+		const plan = expectPlan(planRun(makeAgent({ tools: [] }), "task", context()));
+		const summary = describePlan(plan);
+		expect(summary).toContain("tools=none");
+		expect(summary).toContain("scope=cwd");
+		expect(summary).toContain("isolation=process");
+	});
+});
+
+describe("policy: message and branch coverage", () => {
+	it("treats every default spawn-capable name as a spawn grant", () => {
+		for (const name of ["mx_pi_agent", "subagent", "spawn_subagent", "subagent_task", "Task"]) {
+			const outcome = planRun(
+				makeAgent({ tools: [name] }),
+				"task",
+				context({ availableTools: [name], parentTools: [name] }),
+			);
+			expect(outcome.ok).toBe(false);
+			if (!outcome.ok) expect(outcome.refusal.reason).toBe("spawn-tool-grant");
+		}
+	});
+
+	it("names the offending spawn-capable tools in the refusal", () => {
+		const outcome = planRun(makeAgent({ tools: ["read", "subagent"] }), "task", context());
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.refusal.message).toContain("grants spawn-capable tools, which would allow unbounded recursion");
+		expect(outcome.refusal.message).toContain("subagent");
+	});
+
+	it("names the unresolved explicit tools in the refusal", () => {
+		const outcome = planRun(makeAgent({ tools: ["read", "ghost"] }), "task", context());
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.refusal.message).toContain("grants tools that do not resolve in the child: ghost");
+	});
+
+	it("does not emit an unconfined diagnostic for a confined plan", () => {
+		const plan = expectPlan(planRun(makeAgent(), "task", context()));
+		expect(plan.diagnostics.some((d) => d.message.includes("unconfined"))).toBe(false);
+	});
+
+	it("names which vector the / ceiling licensed", () => {
+		const bash = expectPlan(planRun(makeAgent({ tools: ["bash"] }), "task", context({ scopeCeiling: ["/"] })));
+		expect(bash.diagnostics.some((d) => d.message.includes("unsandboxed bash"))).toBe(true);
+
+		const subprocess = expectPlan(
+			planRun(makeAgent({ isolation: "subprocess", sandbox: "os" }), "task", context({ scopeCeiling: ["/"] })),
+		);
+		expect(subprocess.diagnostics.some((d) => d.message.includes("isolation: subprocess"))).toBe(true);
+	});
+
+	it("names the unavailable model and the missing sandbox backend", () => {
+		const model = planRun(makeAgent({ model: "ghost/model" }), "task", context({ isModelAvailable: () => false }));
+		expect(model.ok).toBe(false);
+		if (!model.ok) {
+			expect(model.refusal.message).toContain('declares model "ghost/model"');
+			expect(model.refusal.message).toContain("not available with configured credentials");
+		}
+
+		const sandbox = planRun(makeAgent({ sandbox: "os" }), "task", context({ sandboxAvailable: false }));
+		expect(sandbox.ok).toBe(false);
+		if (!sandbox.ok) {
+			expect(sandbox.refusal.message).toContain("requires sandbox: os");
+			expect(sandbox.refusal.message).toContain("no supported sandbox backend is available on this platform");
+		}
+	});
+
+	it("keeps a sandbox: none run when the platform has no sandbox backend", () => {
+		const plan = expectPlan(planRun(makeAgent({ sandbox: "none" }), "task", context({ sandboxAvailable: false })));
+		expect(plan.sandbox).toBe("none");
+	});
+
+	it("reports the empty-task message verbatim", () => {
+		const outcome = planRun(makeAgent(), "   ", context());
+		expect(outcome.ok).toBe(false);
+		if (!outcome.ok) expect(outcome.refusal.message).toBe("task must not be empty");
+	});
+
+	it("separates the refusal reason and diagnostics with a newline", () => {
+		const text = describeRefusal({
+			reason: "invalid-request" as const,
+			message: "task must not be empty",
+			diagnostics: [
+				{ level: "info" as const, message: "first" },
+				{ level: "warning" as const, message: "second" },
+			],
+		});
+		expect(text).toBe("Refused (invalid-request): task must not be empty\n- info: first\n- warning: second");
 	});
 });

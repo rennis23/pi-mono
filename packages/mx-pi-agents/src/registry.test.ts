@@ -1,14 +1,20 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	bundledAgentsDir,
 	discoverAgents,
+	discoveryDirs,
 	findAgent,
+	globalAgentsDir,
+	isTrustedKind,
 	pinRegistry,
+	projectAgentsDir,
 	type RegistryDirs,
 	realDirectoryOf,
 	rosterEntries,
+	SOURCE_ORDER,
 	verifyPinned,
 } from "./registry.js";
 
@@ -245,5 +251,169 @@ describe("rosterEntries", () => {
 		writeFileSync(join(agentDir, "agents", "i.md"), "---\nname: i\ndescription: d\n---\n\nbody");
 		const { snapshot } = pinRegistry(dirs(), () => 1);
 		expect(rosterEntries(snapshot.agents)[0].tools).toBeUndefined();
+	});
+});
+
+describe("registry: boundary hardening", () => {
+	it("SOURCE_ORDER and isTrustedKind classify sources", () => {
+		expect(SOURCE_ORDER).toEqual(["bundled", "global", "config", "project"]);
+		expect(isTrustedKind("bundled")).toBe(true);
+		expect(isTrustedKind("global")).toBe(true);
+		expect(isTrustedKind("config")).toBe(false);
+		expect(isTrustedKind("project")).toBe(false);
+	});
+
+	it("directory helpers build the documented paths", () => {
+		expect(globalAgentsDir("/agent")).toBe(join("/agent", "agents"));
+		expect(projectAgentsDir("/proj")).toBe(join("/proj", ".pi", "agents"));
+		expect(bundledAgentsDir().endsWith("agents")).toBe(true);
+	});
+
+	it("discoveryDirs orders bundled, global, config then project", () => {
+		const list = discoveryDirs({ agentDir: "/a", cwd: "/c", agentPaths: ["/x", "/y"], bundledDir: "/b" });
+		expect(list.map((entry) => entry.kind)).toEqual(["bundled", "global", "config", "config", "project"]);
+		expect(list[0].directory).toBe("/b");
+		expect(list[1].directory).toBe(join("/a", "agents"));
+		expect(list[4].directory).toBe(join("/c", ".pi", "agents"));
+	});
+
+	it("ignores non-md, hidden and non-directory paths, and sorts files", () => {
+		const dir = join(root, "defs");
+		mkdirSync(dir, { recursive: true });
+		writeDefinition(dir, "b.md", "bee");
+		writeDefinition(dir, "a.md", "aye");
+		writeDefinition(dir, "notes.txt", "notes");
+		writeFileSync(join(dir, ".hidden.md"), "x");
+		writeDefinition(dir, "c.MD", "cee");
+		const { agents } = discoverAgents(dirs({ agentPaths: [dir] }), () => 1);
+		expect(agents.map((a) => a.definition.name)).toEqual(["aye", "bee", "cee"]);
+	});
+
+	it("tolerates a missing or non-directory scan path", () => {
+		const file = join(root, "afile");
+		writeFileSync(file, "x");
+		const { agents } = discoverAgents(dirs({ agentPaths: [join(root, "missing"), file] }), () => 1);
+		expect(agents).toEqual([]);
+	});
+
+	it("drops a duplicate in the same trust class and keeps the first", () => {
+		writeDefinition(join(agentDir, "agents"), "a.md", "dup");
+		writeDefinition(join(agentDir, "agents"), "b.md", "dup");
+		const { agents, diagnostics } = discoverAgents(dirs(), () => 1);
+		expect(agents).toHaveLength(1);
+		expect(agents[0].source.path).toBe(join(agentDir, "agents", "a.md"));
+		expect(diagnostics.some((d) => d.level === "info" && d.message.includes("duplicate"))).toBe(true);
+	});
+
+	it("drops a definition that fails to parse with a warning", () => {
+		writeFileSync(join(agentDir, "agents", "bad.md"), "---\nmissing: whatever\n---\n\nbody\n");
+		const { agents, diagnostics } = discoverAgents(dirs(), () => 1);
+		expect(agents).toEqual([]);
+		expect(diagnostics.some((d) => d.message.includes("dropped definition"))).toBe(true);
+	});
+
+	it("realDirectoryOf resolves a real dir and falls back for a missing one", () => {
+		const dir = join(root, "realdir");
+		mkdirSync(dir, { recursive: true });
+		expect(realDirectoryOf(join(dir, "f.md"))).toBe(realpathSync(dir));
+		const missing = join(root, "nope", "f.md");
+		expect(realDirectoryOf(missing)).toBe(join(missing, ".."));
+	});
+
+	it("pinRegistry falls back to now() when nothing is pinned", () => {
+		const { snapshot } = pinRegistry(dirs(), () => 1234);
+		expect(snapshot.agents).toEqual([]);
+		expect(snapshot.pinnedAt).toBe(1234);
+	});
+
+	it("verifyPinned reports changed then missing", () => {
+		const path = writeDefinition(join(agentDir, "agents"), "v.md", "verifiable");
+		const agent = findAgent(discoverAgents(dirs(), () => 1).agents, "verifiable")!;
+		expect(verifyPinned(agent).ok).toBe(true);
+		writeFileSync(path, "---\nname: verifiable\ndescription: changed\n---\n\nBody.\n");
+		const changed = verifyPinned(agent);
+		expect(changed).toMatchObject({ ok: false, reason: "changed" });
+		if (!changed.ok) expect(changed.message).toContain("pinned");
+		rmSync(path, { force: true });
+		expect(verifyPinned(agent)).toMatchObject({ ok: false, reason: "missing" });
+	});
+
+	it("rosterEntries truncates the hash and omits absent tools/model", () => {
+		writeDefinition(join(agentDir, "agents"), "r.md", "roster");
+		const agent = findAgent(discoverAgents(dirs(), () => 1).agents, "roster")!;
+		const [entry] = rosterEntries([agent]);
+		expect(entry.name).toBe("roster");
+		expect(entry.hash).toHaveLength(12);
+		expect(entry.tools).toBe("read");
+		expect(entry.model).toBeUndefined();
+		const stripped = { ...agent, definition: { ...agent.definition, tools: undefined, model: "m" } };
+		const [entry2] = rosterEntries([stripped]);
+		expect(entry2.tools).toBeUndefined();
+		expect(entry2.model).toBe("m");
+	});
+});
+
+describe("registry: survivor kills", () => {
+	it("returns full file paths for discovered definitions", () => {
+		const dir = join(root, "paths");
+		mkdirSync(dir, { recursive: true });
+		writeDefinition(dir, "a.md", "aye");
+		const { agents } = discoverAgents(dirs({ agentPaths: [dir] }), () => 1);
+		expect(agents[0].source.path).toBe(join(dir, "a.md"));
+	});
+
+	it("sorts agents by name across config dirs regardless of discovery order", () => {
+		const first = join(root, "first");
+		const second = join(root, "second");
+		mkdirSync(first, { recursive: true });
+		mkdirSync(second, { recursive: true });
+		writeDefinition(first, "z.md", "zeta");
+		writeDefinition(second, "a.md", "alpha");
+		const { agents } = discoverAgents(dirs({ agentPaths: [first, second] }), () => 1);
+		expect(agents.map((a) => a.definition.name)).toEqual(["alpha", "zeta"]);
+	});
+
+	it("treats a non-directory scan path as empty with no diagnostics", () => {
+		const file = join(root, "plainfile");
+		writeFileSync(file, "x");
+		const { agents, diagnostics } = discoverAgents(dirs({ agentPaths: [file] }), () => 1);
+		expect(agents).toEqual([]);
+		expect(diagnostics).toEqual([]);
+	});
+
+	it("warns when a .md entry is a directory that cannot be read as a file", () => {
+		const dir = join(root, "weird");
+		mkdirSync(join(dir, "sub.md"), { recursive: true });
+		const { diagnostics } = discoverAgents(dirs({ agentPaths: [dir] }), () => 1);
+		expect(diagnostics.some((d) => d.message === "could not read definition file")).toBe(true);
+	});
+
+	it("returns an empty list when the directory cannot be listed", () => {
+		const dir = join(root, "noread");
+		mkdirSync(dir, { recursive: true });
+		chmodSync(dir, 0o000);
+		try {
+			const { agents, diagnostics } = discoverAgents(dirs({ agentPaths: [dir] }), () => 1);
+			expect(agents).toEqual([]);
+			expect(diagnostics).toEqual([]);
+		} finally {
+			chmodSync(dir, 0o700);
+		}
+	});
+
+	it("names the missing and changed pin messages", () => {
+		const path = writeDefinition(join(agentDir, "agents"), "v2.md", "verify2");
+		const agent = findAgent(discoverAgents(dirs(), () => 1).agents, "verify2")!;
+		writeFileSync(path, "---\nname: verify2\ndescription: changed\n---\n\nBody.\n");
+		const changed = verifyPinned(agent);
+		expect(changed.ok).toBe(false);
+		if (!changed.ok) {
+			expect(changed.message).toContain(`pinned ${agent.hash.slice(0, 12)}`);
+			expect(changed.message).not.toContain(agent.hash);
+		}
+		rmSync(path, { force: true });
+		const missing = verifyPinned(agent);
+		expect(missing.ok).toBe(false);
+		if (!missing.ok) expect(missing.message).toContain("no longer readable");
 	});
 });

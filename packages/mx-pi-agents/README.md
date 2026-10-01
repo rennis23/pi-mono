@@ -64,11 +64,15 @@ call settles every task and reports per-task status. While a call runs, the
 
 ## Direct invocation
 
-In the interactive TUI you can run an agent (or a pipeline) directly from the
-prompt with a `#` directive, without the model having to call the tool.
+In the interactive TUI you can invoke an agent directly from the prompt with a
+`#` directive, without the model having to call the tool. A definition's `kind`
+(see [agent kinds](#agent-kinds)) decides what a bare `#name` does: `persona`
+and `main` switch the **main session**, `sub` delegates to a child.
 
 ```text
-#explorer Where is the config loaded?
+#explorer Where is the config loaded?      # switch (explorer defaults to main)
+#reviewer                                  # switch and wait
+#none                                      # reset to plain pi
 
 #[planner > builder > reviewer, explorer] Add a health endpoint
 ```
@@ -77,10 +81,17 @@ The directive grammar:
 
 | Syntax | Meaning |
 | --- | --- |
-| `#name <prompt>` | Run one agent with `<prompt>` |
-| `#[a > b] <prompt>` | Run `a`, then feed its output to `b` |
-| `#[a, b] <prompt>` | Run `a` and `b` in parallel with the same prompt |
-| `#[a > b, c > d] <prompt>` | `a`; then `b` and `c` in parallel; then `d` |
+| `#name [prompt]` | Switch the main session to a `persona`/`main` agent; with a prompt, send it under the new persona |
+| `#name [prompt]` | Delegate to a `sub` agent (a prompt is required) |
+| `#none` | Reset the main session to plain pi (takes no prompt) |
+| `#[a > b] <prompt>` | Delegate: run `a`, then feed its output to `b` |
+| `#[a, b] <prompt>` | Delegate: run `a` and `b` in parallel with the same prompt |
+| `#[a > b, c > d] <prompt>` | Delegate: `a`; then `b` and `c` in parallel; then `d` |
+
+Bracketed pipelines and the `mx_pi_agent` tool always run children, so a `sub`
+agent without brackets is the only single-name form that delegates. `persona`
+agents are refused as children everywhere; `main` agents may still run as
+children. `none` is reserved and can never be a definition name.
 
 Stages flow with cascade `{previous}`: stage 1 receives `<prompt>` and every
 later stage receives the previous stage's combined output (for a parallel stage,
@@ -88,16 +99,54 @@ the successful results joined under `--- <agent> ---` headers). Up to 16 stages
 are allowed, and a parallel group is capped at 8 agents.
 
 Typing `#` at the start of an empty input opens autocomplete listing every
-pinned agent with its description and source; it keeps completing after `[`,
-`>` and `,` inside a bracket. `#` is an unambiguous prefix: input that starts
-with `#` but does not parse is reported in the UI and **not** forwarded to the
-model, so a prompt cannot accidentally begin with `#`.
+pinned agent with its kind badge, description and source, plus a built-in
+`pi.dev [base]` row that inserts `#none`. It keeps completing after `[`, `>` and
+`,` inside a bracket. `#` is an unambiguous prefix: input that starts with `#`
+but does not parse is reported in the UI and **not** forwarded to the model, so
+a prompt cannot accidentally begin with `#`.
 
 Directives go through exactly the same trust gate, definition hash
 re-verification, budgets and path scope as the `mx_pi_agent` tool. An unknown or
 gated agent refuses with the same message. Only interactive input is
 intercepted; RPC and extension-injected input are untouched, and directives are
 disabled by `--mx-pi-agents-disable` along with the tool.
+
+### Agent kinds
+
+Every definition has a `kind` in frontmatter. It is optional and defaults to
+`main`.
+
+| `kind` | `#name` | As a child (tool / `#[…]`) | Prompt effect |
+| --- | --- | --- | --- |
+| `persona` | switches the main session, **replacing** the default prompt prefix | **refused** | body replaces the prompt preamble; pi's rules, docs, project context and cwd sections stay |
+| `main` | switches the main session, **appending** to the system prompt | allowed | body appends as an addendum |
+| `sub` | not switchable; `#name <task>` delegates | allowed | body is the child prompt (runtime header + body) |
+
+A switch also applies the definition's `tools`, `model` and `thinking` as a
+preset and restores the pre-switch values on `#none`. Child-only fields
+(`scope`, `tools_inheritance`, `max_turns`, `timeout_ms`, `token_budget`,
+`cost_budget`, `isolation`, `sandbox`) are ignored in main mode. The preset is
+applied fail-closed: if any declared tool does not resolve in the main session,
+or a declared model is unavailable, the whole switch is refused and nothing
+changes.
+
+A switch is scoped to the session. It is persisted as a non-context custom
+entry and re-applied when the session is resumed (the prompt is always
+re-derived; the preset is only re-applied when the runtime still reflects the
+switch). The active switch is shown in the footer as `persona:<name>` or
+`main:<name>`.
+
+```markdown
+---
+name: reviewer
+description: Review a diff for correctness and security
+kind: persona
+thinking: medium
+---
+
+You are a meticulous code reviewer. Report findings by severity and cite
+file:line evidence.
+```
 
 ### Live progress
 
@@ -189,8 +238,9 @@ You are a review agent. Report findings as a list, most severe first.
 
 | Field | Required | Values | Notes |
 | --- | --- | --- | --- |
-| `name` | yes | `[a-z0-9][a-z0-9_-]{0,63}` | Identity; also the `agent` value in tool calls |
+| `name` | yes | `[a-z0-9][a-z0-9_-]{0,63}` | Identity; also the `agent` value in tool calls. `none` is reserved |
 | `description` | yes | ≤ 512 chars | Shown in the roster |
+| `kind` | no | `main` (default), `persona`, `sub` | What a bare `#name` does. See [agent kinds](#agent-kinds) |
 | `tools` | no | list of tool names | **Absent ≠ empty.** `[]` means no tools |
 | `tools_inheritance` | no | `none` (default), `parent` | Ignored when `tools` is present |
 | `scope` | no | list of paths | Directory roots this agent may touch. Absent = the run's cwd; `[]` is a refusal. Must be beneath the config ceiling and below cwd |

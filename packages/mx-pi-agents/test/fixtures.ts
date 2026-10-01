@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { afterEach } from "vitest";
 import type { SessionContext } from "../src/policy.js";
 import { sha256Hex } from "../src/security.js";
-import type { AgentDefinition, PinnedAgent, SourceKind } from "../src/types.js";
+import type { AgentDefinition, AgentKind, PinnedAgent, SourceKind } from "../src/types.js";
 
 const created: string[] = [];
 
@@ -45,13 +45,17 @@ export interface MakeAgentOptions {
 	isolation?: AgentDefinition["isolation"];
 	sandbox?: AgentDefinition["sandbox"];
 	body?: string;
-	kind?: SourceKind;
+	/** Provenance of the definition; not the agent kind. */
+	sourceKind?: SourceKind;
+	/** Agent kind (`persona`/`main`/`sub`); defaults to `main`. */
+	agentKind?: AgentKind;
 	/** Extra frontmatter lines appended verbatim (used for hostile cases). */
 	extraFrontmatter?: string;
 }
 
 function frontmatterFor(options: MakeAgentOptions, name: string): string {
 	const lines = [`name: ${name}`, `description: ${options.description ?? `${name} description`}`];
+	if (options.agentKind !== undefined) lines.push(`kind: ${options.agentKind}`);
 	if (options.tools !== undefined) lines.push(`tools: [${options.tools.join(", ")}]`);
 	if (options.toolsInheritance !== undefined) lines.push(`tools_inheritance: ${options.toolsInheritance}`);
 	if (options.scope !== undefined) lines.push(`scope: [${options.scope.join(", ")}]`);
@@ -73,7 +77,7 @@ function frontmatterFor(options: MakeAgentOptions, name: string): string {
  */
 export function makeAgent(options: MakeAgentOptions = {}): PinnedAgent {
 	const name = options.name ?? "explorer";
-	const kind = options.kind ?? "global";
+	const kind = options.sourceKind ?? "global";
 	const dir = mkdtempSync(join(tmpdir(), "mx-pi-agents-fixture-"));
 	created.push(dir);
 
@@ -85,6 +89,7 @@ export function makeAgent(options: MakeAgentOptions = {}): PinnedAgent {
 	const definition: AgentDefinition = {
 		name,
 		description: options.description ?? `${name} description`,
+		kind: options.agentKind ?? "main",
 		tools: options.tools,
 		toolsInheritance: options.toolsInheritance ?? "none",
 		scope: options.scope,

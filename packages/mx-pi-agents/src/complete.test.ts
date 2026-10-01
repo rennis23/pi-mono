@@ -3,7 +3,14 @@ import { makeAgent } from "../test/fixtures.js";
 import { type CompletionSource, completionItems, directiveContext, toCompletionSource } from "./complete.js";
 
 function source(overrides: Partial<CompletionSource> = {}): CompletionSource {
-	return { name: "explorer", description: "reads things", source: "bundled", trusted: true, ...overrides };
+	return {
+		name: "explorer",
+		description: "reads things",
+		source: "bundled",
+		trusted: true,
+		kind: "main",
+		...overrides,
+	};
 }
 
 describe("directiveContext", () => {
@@ -52,10 +59,10 @@ describe("directiveContext", () => {
 
 describe("toCompletionSource", () => {
 	it("projects the pinned roster", () => {
-		const agent = makeAgent({ name: "explorer", kind: "bundled" });
+		const agent = makeAgent({ name: "explorer", sourceKind: "bundled" });
 		const projected = toCompletionSource([agent]);
 		expect(projected).toEqual([
-			{ name: "explorer", description: "explorer description", source: "bundled", trusted: true },
+			{ name: "explorer", description: "explorer description", source: "bundled", trusted: true, kind: "main" },
 		]);
 	});
 });
@@ -77,7 +84,21 @@ describe("completionItems", () => {
 
 	it("orders prefix matches before substring matches", () => {
 		const items = completionItems(roster, { mode: "single", prefix: "#e" });
-		expect(items.map((item) => item.label)).toEqual(["explorer", "planner", "builder"]);
+		expect(items.map((item) => item.label)).toEqual(["explorer [main]", "planner [main]", "builder [main]"]);
+	});
+
+	it("badges each item with its kind and offers the built-in reset row", () => {
+		const items = completionItems([source({ name: "review", kind: "persona" })], {
+			mode: "single",
+			prefix: "#",
+		});
+		expect(items[0]).toEqual({ value: "#none", label: "pi.dev [base]", description: "reset to plain pi" });
+		expect(items.some((item) => item.label === "review [persona]" && item.value === "#review")).toBe(true);
+	});
+
+	it("does not offer the reset row inside a pipeline", () => {
+		const items = completionItems(roster, { mode: "pipeline", prefix: "" });
+		expect(items.some((item) => item.value === "none" || item.value === "#none")).toBe(false);
 	});
 
 	it("marks gated sources", () => {
@@ -100,5 +121,83 @@ describe("completionItems", () => {
 			prefix: "#exp",
 		});
 		expect(items[0].description).not.toMatch(/[\u0000-\u0009\u000B-\u001F]/);
+	});
+});
+
+describe("complete: boundary hardening", () => {
+	it("directiveContext detects single, pipeline and non-directive positions", () => {
+		expect(directiveContext("hello")).toBeUndefined();
+		expect(directiveContext("x #a")).toBeUndefined();
+		expect(directiveContext("  #exp")).toEqual({ mode: "single", prefix: "#exp" });
+		expect(directiveContext("#[a > b")).toEqual({ mode: "pipeline", prefix: "b" });
+		expect(directiveContext("#[a]")).toBeUndefined();
+		expect(directiveContext("#a task")).toBeUndefined();
+		expect(directiveContext("#a")).toEqual({ mode: "single", prefix: "#a" });
+	});
+
+	it("completionItems filters prefix then substring", () => {
+		const src = [source({ name: "abc" }), source({ name: "xab" }), source({ name: "zzz" })];
+		const items = completionItems(src, { mode: "single", prefix: "#ab" });
+		expect(items.map((item) => item.value)).toEqual(["#abc", "#xab"]);
+	});
+
+	it("completionItems offers the base row in single mode only", () => {
+		const src = [source({ name: "nope" })];
+		expect(completionItems(src, { mode: "single", prefix: "#" }).some((item) => item.value === "#none")).toBe(true);
+		expect(completionItems(src, { mode: "single", prefix: "#pi" }).some((item) => item.value === "#none")).toBe(true);
+		expect(completionItems(src, { mode: "pipeline", prefix: "" }).some((item) => item.value === "none")).toBe(false);
+	});
+
+	it("completionItems caps at 20 and marks gated sources", () => {
+		const many = Array.from({ length: 25 }, (_, index) => source({ name: `a${index}` }));
+		expect(completionItems(many, { mode: "single", prefix: "#a" })).toHaveLength(20);
+		const items = completionItems([source({ name: "a", trusted: false })], { mode: "single", prefix: "#a" });
+		expect(items[0].description).toContain("gated");
+	});
+
+	it("toCompletionSource maps the pinned fields", () => {
+		const agent = makeAgent({ name: "mapped", agentKind: "persona" });
+		const [entry] = toCompletionSource([agent]);
+		expect(entry).toMatchObject({ name: "mapped", kind: "persona", trusted: true, source: "global" });
+	});
+});
+
+describe("complete: survivor kills", () => {
+	it("requires the # to start the line", () => {
+		expect(directiveContext("foo #bar")).toBeUndefined();
+		expect(directiveContext("  #bar")).toEqual({ mode: "single", prefix: "#bar" });
+	});
+
+	it("falls back to an empty pipeline prefix", () => {
+		expect(directiveContext("#[a.")).toEqual({ mode: "pipeline", prefix: "" });
+	});
+
+	it("marks gated agents in the description", () => {
+		const rows = completionItems([source({ name: "gated", trusted: false })], { mode: "single", prefix: "#" });
+		const gated = rows.find((r) => r.label.startsWith("gated"));
+		expect(gated?.description).toContain("gated");
+	});
+
+	it("offers pi.dev in single mode and never in a pipeline", () => {
+		const items = [source()];
+		expect(completionItems(items, { mode: "single", prefix: "#" })[0]?.value).toBe("#none");
+		expect(completionItems(items, { mode: "pipeline", prefix: "" }).some((r) => r.value === "none")).toBe(false);
+	});
+
+	it("offers pi.dev for the none and pi.dev prefixes", () => {
+		const items = [source()];
+		expect(completionItems(items, { mode: "single", prefix: "#n" })[0]?.value).toBe("#none");
+		expect(completionItems(items, { mode: "single", prefix: "#pi" })[0]?.value).toBe("#none");
+	});
+
+	it("ranks prefix matches before substring matches", () => {
+		const items = [source({ name: "beta", kind: "main" }), source({ name: "alpha", kind: "main" })];
+		const rows = completionItems(items, { mode: "pipeline", prefix: "a" });
+		expect(rows.map((r) => r.label)).toEqual(["alpha [main]", "beta [main]"]);
+	});
+
+	it("caps the roster at 20 items", () => {
+		const items = Array.from({ length: 30 }, (_, i) => source({ name: `agent-${i}` }));
+		expect(completionItems(items, { mode: "pipeline", prefix: "" })).toHaveLength(20);
 	});
 });

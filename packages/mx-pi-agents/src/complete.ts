@@ -7,7 +7,7 @@
  */
 
 import { sanitizeUiText } from "./security.js";
-import type { PinnedAgent } from "./types.js";
+import type { AgentKind, PinnedAgent } from "./types.js";
 
 /** One autocomplete row. Structurally an `AutocompleteItem`. */
 export interface CompletionItem {
@@ -22,6 +22,7 @@ export interface CompletionSource {
 	description: string;
 	source: string;
 	trusted: boolean;
+	kind: AgentKind;
 }
 
 /** Where in a directive the cursor sits, and the text the popup filters on. */
@@ -39,6 +40,7 @@ export function toCompletionSource(agents: readonly PinnedAgent[]): CompletionSo
 		description: agent.definition.description,
 		source: agent.source.kind,
 		trusted: agent.source.trusted,
+		kind: agent.definition.kind,
 	}));
 }
 
@@ -71,6 +73,14 @@ export function directiveContext(textBeforeCursor: string): DirectiveContext | u
  * substring matches, capped at 20. An empty result is returned as `[]` (never
  * a file-completion fallback), so an unknown name shows an empty popup.
  */
+/**
+ * Filter the roster for a directive context: prefix matches first, then
+ * substring matches, capped at 20. An empty result is returned as `[]` (never
+ * a file-completion fallback), so an unknown name shows an empty popup.
+ *
+ * Single mode prepends the built-in `pi.dev [base]` row (`none`), which resets
+ * the main session to plain pi. It is never offered inside a pipeline.
+ */
 export function completionItems(source: readonly CompletionSource[], context: DirectiveContext): CompletionItem[] {
 	const term = (context.mode === "single" ? context.prefix.replace(/^#/, "") : context.prefix).toLowerCase();
 	const prefixMatches: CompletionSource[] = [];
@@ -82,14 +92,20 @@ export function completionItems(source: readonly CompletionSource[], context: Di
 		else if (name.includes(term)) substringMatches.push(agent);
 	}
 
-	return [...prefixMatches, ...substringMatches].slice(0, MAX_ITEMS).map((agent) => {
+	const rows = [...prefixMatches, ...substringMatches].slice(0, MAX_ITEMS).map((agent) => {
 		const trust = agent.trusted ? "" : " gated";
 		const label = sanitizeUiText(agent.name, 64);
 		const description = sanitizeUiText(`${agent.description} · ${agent.source}${trust}`, 160);
 		return {
 			value: context.mode === "single" ? `#${agent.name}` : agent.name,
-			label,
+			label: `${label} [${agent.kind}]`,
 			description,
 		};
 	});
+
+	if (context.mode === "single" && (term.length === 0 || "none".startsWith(term) || "pi.dev".startsWith(term))) {
+		rows.unshift({ value: "#none", label: "pi.dev [base]", description: "reset to plain pi" });
+	}
+
+	return rows.slice(0, MAX_ITEMS);
 }

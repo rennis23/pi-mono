@@ -44,6 +44,14 @@ import {
 	runSingle,
 } from "./src/modes.js";
 import { aggregateResults, createRedactor, DEFAULT_PER_RESULT_BYTES, DEFAULT_TOTAL_BYTES } from "./src/output.js";
+import {
+	dispatchDirective,
+	lastSwitchEntry,
+	planReset,
+	planSwitch,
+	rehydrate as rehydratePersona,
+	snapshotBaseline,
+} from "./src/persona.js";
 import { describeRefusal } from "./src/policy.js";
 import {
 	createProgress,
@@ -54,9 +62,10 @@ import {
 	renderProgress,
 	SPINNER_FRAMES,
 } from "./src/progress.js";
-import { bundledAgentsDir, discoverAgents, type RegistryDirs, rosterEntries } from "./src/registry.js";
+import { bundledAgentsDir, discoverAgents, type RegistryDirs, rosterEntries, verifyPinned } from "./src/registry.js";
 import {
 	type AgentToolDetails,
+	formatSwitchNotice,
 	renderCallLines,
 	renderDiagnostics,
 	renderDirectiveMessage,
@@ -69,9 +78,26 @@ import { isSandboxAvailable } from "./src/runners/sandbox.js";
 import { CHILD_ENV_MARKER, createSubprocessRunner } from "./src/runners/subprocess.js";
 import { CHILD_TELEMETRY_CHANNEL, type ChildTelemetrySink } from "./src/telemetry.js";
 import { approvalRequest, checkTrust, gatedAgents, recordApproval, withApprovals } from "./src/trust.js";
-import { type AgentDiagnostic, type PinnedAgent, type RunPlan, type RunResult, zeroUsage } from "./src/types.js";
+import {
+	type AgentDiagnostic,
+	type PinnedAgent,
+	type RunPlan,
+	type RunResult,
+	type SwitchApplied,
+	type SwitchBaseline,
+	type SwitchEntryData,
+	type SwitchPlan,
+	type ThinkingLevel,
+	zeroUsage,
+} from "./src/types.js";
 
 const CHILD_MARKER_VALUE = "1";
+
+/** Custom entry type persisting a main-session switch (never sent to the model). */
+const SWITCH_ENTRY_TYPE = "mx-pi-agents.switch";
+
+/** Status key publishing the active main-session persona in the native footer. */
+const PERSONA_STATUS_KEY = "mx-pi-agents-persona";
 
 /** Custom message type for a `#` directive result appended to the transcript. */
 const DIRECTIVE_MESSAGE = "mx-pi-agents.directive";
@@ -303,6 +329,13 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 	let roster: PinnedAgent[] = [];
 	let diagnostics: AgentDiagnostic[] = [];
 
+	/** Baseline captured before the first switch of the session; survives switches. */
+	let baseline: SwitchBaseline | undefined;
+	/** Active main-session switch, when one is applied. */
+	let activeSwitch: { name: string; kind: "persona" | "main"; applied: SwitchApplied } | undefined;
+	/** Guards the single auto-deactivation notification per switch. */
+	let switchDeactivatedNotified = false;
+
 	const inProcess = createInProcessRunner({ agentDir });
 	const subprocess = createSubprocessRunner({
 		resolvePi: () => {
@@ -323,6 +356,237 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 
 	function registryDirs(ctx: ExtensionContext): RegistryDirs {
 		return { agentDir, cwd: ctx.cwd, agentPaths: config.agentPaths };
+	}
+
+	/** Label for a main-session model, stable across sessions. */
+	function modelLabel(model: ExtensionContext["model"]): string | undefined {
+		if (!model) return undefined;
+		return `${model.provider}/${model.id}`;
+	}
+
+	/** Resolve a `provider/id` label against the main session's model registry. */
+	function resolveModel(ctx: ExtensionContext, label: string): ExtensionContext["model"] {
+		const [provider, modelId] = label.includes("/") ? label.split("/", 2) : ["", label];
+		try {
+			if (provider.length > 0) return ctx.modelRegistry.find(provider, modelId);
+			return ctx.modelRegistry.getAll().find((model) => model.id === modelId);
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** Whether a `provider/id` label is available with configured credentials. */
+	function modelAvailable(ctx: ExtensionContext, label: string): boolean {
+		const [provider, modelId] = label.includes("/") ? label.split("/", 2) : ["", label];
+		try {
+			if (provider.length > 0) return ctx.modelRegistry.find(provider, modelId) !== undefined;
+			return ctx.modelRegistry.getAll().some((model) => model.id === modelId);
+		} catch {
+			return false;
+		}
+	}
+
+	/** Tool names that resolve in the main session. */
+	function mainToolNames(): string[] {
+		try {
+			const all = pi.getAllTools();
+			if (Array.isArray(all) && all.length > 0) return all.map((tool) => tool.name);
+		} catch {
+			/* fall through to the active set */
+		}
+		try {
+			return pi.getActiveTools();
+		} catch {
+			return [];
+		}
+	}
+
+	/** Snapshot of the main session's switching-relevant runtime state. */
+	function currentRuntime(ctx: ExtensionContext): {
+		tools: string[];
+		model: string | undefined;
+		thinking: ThinkingLevel | undefined;
+	} {
+		let tools: string[] = [];
+		let thinking: ThinkingLevel | undefined;
+		try {
+			tools = pi.getActiveTools();
+		} catch {
+			tools = [];
+		}
+		try {
+			thinking = pi.getThinkingLevel();
+		} catch {
+			thinking = undefined;
+		}
+		return { tools, model: modelLabel(ctx.model), thinking };
+	}
+
+	/** Apply only the fields a switch declared, then record it in the session. */
+	async function applySwitchPlan(ctx: ExtensionContext, plan: SwitchPlan): Promise<void> {
+		if (baseline === undefined) baseline = snapshotBaseline(currentRuntime(ctx));
+		if (plan.applied.tools !== undefined) {
+			try {
+				pi.setActiveTools(plan.applied.tools);
+			} catch {
+				/* a disposing session must not crash the switch */
+			}
+		}
+		if (plan.applied.model !== undefined) {
+			const model = resolveModel(ctx, plan.applied.model);
+			if (model) {
+				try {
+					await pi.setModel(model);
+				} catch {
+					/* ignore */
+				}
+			}
+		}
+		if (plan.applied.thinking !== undefined) {
+			try {
+				pi.setThinkingLevel(plan.applied.thinking);
+			} catch {
+				/* ignore */
+			}
+		}
+		activeSwitch = { name: plan.name, kind: plan.kind, applied: plan.applied };
+		switchDeactivatedNotified = false;
+		try {
+			ctx.ui.setStatus(PERSONA_STATUS_KEY, `${plan.kind}:${plan.name}`);
+		} catch {
+			/* ignore */
+		}
+		try {
+			pi.appendEntry(SWITCH_ENTRY_TYPE, {
+				name: plan.name,
+				kind: plan.kind,
+				baseline,
+				applied: plan.applied,
+				switchedAt: Date.now(),
+			} satisfies SwitchEntryData);
+		} catch {
+			/* persistence is best-effort */
+		}
+	}
+
+	/** Restore the pre-switch baseline and clear the active switch. */
+	async function resetSwitch(ctx: ExtensionContext): Promise<void> {
+		if (baseline !== undefined) {
+			const restore = planReset(baseline, {
+				availableTools: mainToolNames(),
+				isModelAvailable: (label) => modelAvailable(ctx, label),
+			});
+			try {
+				pi.setActiveTools(restore.tools);
+			} catch {
+				/* ignore */
+			}
+			if (restore.model !== undefined) {
+				const model = resolveModel(ctx, restore.model);
+				if (model) {
+					try {
+						await pi.setModel(model);
+					} catch {
+						/* ignore */
+					}
+				}
+			}
+			if (restore.thinking !== undefined) {
+				try {
+					pi.setThinkingLevel(restore.thinking);
+				} catch {
+					/* ignore */
+				}
+			}
+			for (const warning of restore.warnings) ctx.ui.notify(`mx-pi-agents: ${warning}`, "warning");
+		}
+		activeSwitch = undefined;
+		switchDeactivatedNotified = false;
+		try {
+			ctx.ui.setStatus(PERSONA_STATUS_KEY, undefined);
+		} catch {
+			/* ignore */
+		}
+		try {
+			pi.appendEntry(SWITCH_ENTRY_TYPE, {
+				name: null,
+				baseline: baseline ?? snapshotBaseline(currentRuntime(ctx)),
+				switchedAt: Date.now(),
+			} satisfies SwitchEntryData);
+		} catch {
+			/* ignore */
+		}
+	}
+
+	/**
+	 * Deactivate a switch whose definition vanished or changed. The base prompt
+	 * continues; the operator is told once per switch.
+	 */
+	function deactivateSwitch(ctx: ExtensionContext, message: string): void {
+		activeSwitch = undefined;
+		try {
+			ctx.ui.setStatus(PERSONA_STATUS_KEY, undefined);
+		} catch {
+			/* ignore */
+		}
+		if (switchDeactivatedNotified) return;
+		switchDeactivatedNotified = true;
+		try {
+			ctx.ui.notify(`mx-pi-agents: ${message}`, "warning");
+		} catch {
+			/* ignore */
+		}
+	}
+
+	/** Apply the preset fields of a rehydrated switch (only when it still reflects the switch). */
+	function applyPresetFields(ctx: ExtensionContext, applied: SwitchApplied): void {
+		if (applied.tools !== undefined) {
+			try {
+				pi.setActiveTools(applied.tools);
+			} catch {
+				/* ignore */
+			}
+		}
+		if (applied.thinking !== undefined) {
+			try {
+				pi.setThinkingLevel(applied.thinking);
+			} catch {
+				/* ignore */
+			}
+		}
+		if (applied.model !== undefined) {
+			const model = resolveModel(ctx, applied.model);
+			if (model) {
+				try {
+					void pi.setModel(model).catch(() => undefined);
+				} catch {
+					/* ignore */
+				}
+			}
+		}
+	}
+
+	/** Rebuild the active switch from the session branch, if one was persisted. */
+	async function rehydrateSwitch(ctx: ExtensionContext): Promise<void> {
+		try {
+			const entry = lastSwitchEntry(ctx.sessionManager.getBranch());
+			if (entry) baseline = entry.baseline;
+			const decision = rehydratePersona(entry, currentRuntime(ctx));
+			if (!decision.active) {
+				activeSwitch = undefined;
+				return;
+			}
+			activeSwitch = { name: decision.name, kind: decision.kind, applied: decision.applied };
+			switchDeactivatedNotified = false;
+			try {
+				ctx.ui.setStatus(PERSONA_STATUS_KEY, `${decision.kind}:${decision.name}`);
+			} catch {
+				/* ignore */
+			}
+			if (decision.applyPreset) applyPresetFields(ctx, decision.applied);
+		} catch {
+			/* persistence is best-effort; a session without it stays plain pi */
+		}
 	}
 
 	/** Load config and pin the roster. Called at session start and on refresh. */
@@ -535,6 +799,7 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		pin(ctx);
+		await rehydrateSwitch(ctx);
 		overlay.setUICtx(ctx.ui);
 		for (const diagnostic of diagnostics) {
 			if (diagnostic.level === "warning") ctx.ui.notify(`mx-pi-agents: ${diagnostic.message}`, "warning");
@@ -553,6 +818,36 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => {
 		overlay.dispose();
+	});
+
+	// Re-derived on every turn so the prompt is exact even after a resume, and
+	// re-hashed so a mid-session edit deactivates the switch (invariant 12).
+	pi.on("before_agent_start", async (event, ctx) => {
+		if (activeSwitch === undefined) return;
+		try {
+			const name = activeSwitch.name;
+			const agent = roster.find((candidate) => candidate.definition.name === name);
+			if (!agent) {
+				deactivateSwitch(ctx, `agent "${name}" was removed; the main-prompt switch was cancelled.`);
+				return;
+			}
+			const verified = verifyPinned(agent);
+			if (!verified.ok) {
+				deactivateSwitch(ctx, `agent "${name}" changed since session start; the main-prompt switch was cancelled.`);
+				return;
+			}
+			const options = event.systemPromptOptions;
+			if (!options) return;
+			if (agent.definition.kind === "persona") {
+				options.customPrompt = agent.definition.body;
+			} else {
+				options.appendSystemPrompt = [options.appendSystemPrompt, agent.definition.body]
+					.filter((part) => part.length > 0)
+					.join("\n\n");
+			}
+		} catch {
+			/* a disposing session must never crash a turn; the base prompt is used */
+		}
 	});
 
 	pi.on("input", async (event, ctx) => {
@@ -576,6 +871,69 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 			}
 
 			const directive = parsed.directive;
+
+			// Kind dispatch for a single-name directive happens before any child
+			// session exists: persona/main mutate the main session, sub delegates,
+			// none resets, anything unknown refuses.
+			const singleName =
+				!directive.pipeline && directive.stages.length === 1 && directive.stages[0].agents.length === 1
+					? directive.stages[0].agents[0]
+					: undefined;
+			const dispatch =
+				singleName !== undefined
+					? dispatchDirective({
+							name: singleName,
+							kind: roster.find((candidate) => candidate.definition.name === singleName)?.definition.kind,
+							hasTask: directive.task !== undefined,
+						})
+					: undefined;
+
+			if (dispatch !== undefined && dispatch.action !== "delegate") {
+				if (dispatch.action === "refuse") {
+					ctx.ui.notify(`mx-pi-agents: ${dispatch.message}`, "warning");
+					return { action: "handled" as const };
+				}
+				if (dispatch.action === "reset") {
+					await resetSwitch(ctx);
+					ctx.ui.notify(`mx-pi-agents: ${formatSwitchNotice("", "base")}`, "info");
+					return { action: "handled" as const };
+				}
+
+				const agent = roster.find((candidate) => candidate.definition.name === singleName);
+				if (agent === undefined) {
+					ctx.ui.notify(`mx-pi-agents: unknown agent "#${singleName}".`, "warning");
+					return { action: "handled" as const };
+				}
+				if (!agent.source.trusted) {
+					const decision = await authorize(agent, ctx);
+					if (!decision.ok) {
+						ctx.ui.notify(`mx-pi-agents: ${decision.refusal}`, "warning");
+						return { action: "handled" as const };
+					}
+				}
+				const verified = verifyPinned(agent);
+				if (!verified.ok) {
+					ctx.ui.notify(`mx-pi-agents: ${verified.message}`, "warning");
+					return { action: "handled" as const };
+				}
+				const planned = planSwitch(agent, {
+					availableTools: mainToolNames(),
+					isModelAvailable: (label) => modelAvailable(ctx, label),
+				});
+				if (!planned.ok) {
+					ctx.ui.notify(`mx-pi-agents: ${planned.refusal}`, "warning");
+					return { action: "handled" as const };
+				}
+				await applySwitchPlan(ctx, planned.plan);
+				if (directive.task !== undefined) {
+					// The switch is applied before this same turn's before_agent_start, so
+					// the task runs under the new persona.
+					return { action: "transform" as const, text: directive.task };
+				}
+				ctx.ui.notify(`mx-pi-agents: ${formatSwitchNotice(planned.plan.name, planned.plan.kind)}`, "info");
+				return { action: "handled" as const };
+			}
+
 			const controller = new AbortController();
 			let unsubscribe: (() => void) | undefined;
 			try {
@@ -594,14 +952,14 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 				unsubscribe = undefined;
 			}
 			try {
-				const single = directive.stages.length === 1 && directive.stages[0].agents.length === 1;
-				const request = single
-					? { kind: "single" as const, steps: [{ agent: directive.stages[0].agents[0], task: directive.task }] }
-					: {
-							kind: "pipeline" as const,
-							stages: directive.stages.map((stage) => ({ agents: stage.agents })),
-							task: directive.task,
-						};
+				const request =
+					singleName !== undefined
+						? { kind: "single" as const, steps: [{ agent: singleName, task: directive.task ?? "" }] }
+						: {
+								kind: "pipeline" as const,
+								stages: directive.stages.map((stage) => ({ agents: stage.agents })),
+								task: directive.task ?? "",
+							};
 				const { text, details, cancelled } = await runDelegation(request, ctx, { signal: controller.signal });
 				pi.sendMessage(
 					{ customType: DIRECTIVE_MESSAGE, content: text, display: true, details },

@@ -91,3 +91,11 @@ describe("createChildTelemetryExtension", () => {
 		expect(received).toEqual([]);
 	});
 });
+
+describe("telemetry: survivor kills", () => {
+	it("does not learn the session id from a non-session_start event", () => {
+		const { received, fire } = build();
+		fire("message_end", { type: "message_end" }, { sessionManager: { getSessionId: () => "child-1" } });
+		expect(received[0]).not.toHaveProperty("childSessionId");
+	});
+});

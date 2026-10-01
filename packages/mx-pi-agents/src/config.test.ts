@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	APPROVAL_MAX_AGE_MS,
 	CONFIG_FILE_NAME,
+	CONFIG_VERSION,
 	createConfigStore,
 	defaultConfig,
 	isOutsideRoots,
@@ -281,5 +283,223 @@ describe("isOutsideRoots", () => {
 		const outside = join(tmpdir(), "elsewhere", "file.txt");
 		expect(isOutsideRoots(inside, [join(root, "repo")])).toBe(false);
 		expect(isOutsideRoots(outside, [join(root, "repo")])).toBe(true);
+	});
+});
+
+describe("config: boundary hardening", () => {
+	it("APPROVAL_MAX_AGE_MS is exactly 180 days", () => {
+		expect(APPROVAL_MAX_AGE_MS).toBe(180 * 24 * 60 * 60 * 1000);
+		expect(APPROVAL_MAX_AGE_MS).toBe(15_552_000_000);
+	});
+
+	it("parseConfig returns defaults with a warning for a non-object", () => {
+		const diagnostics: AgentDiagnostic[] = [];
+		expect(parseConfig(null, diagnostics)).toEqual(defaultConfig());
+		expect(diagnostics[0].message).toContain("not a JSON object");
+		const arrayDiagnostics: AgentDiagnostic[] = [];
+		parseConfig([], arrayDiagnostics);
+		expect(arrayDiagnostics).toHaveLength(1);
+	});
+
+	it("parseConfig records a version mismatch as info", () => {
+		const diagnostics: AgentDiagnostic[] = [];
+		parseConfig({ version: 99 }, diagnostics);
+		expect(diagnostics.some((d) => d.level === "info" && d.message.includes("version"))).toBe(true);
+	});
+
+	it("parseAgentPaths ignores non-lists, drops non-strings and trims", () => {
+		const diagnostics: AgentDiagnostic[] = [];
+		expect(parseConfig({ agentPaths: "nope" }, diagnostics).agentPaths).toEqual([]);
+		expect(diagnostics.some((d) => d.message.includes("agentPaths is not a list"))).toBe(true);
+		const entryDiagnostics: AgentDiagnostic[] = [];
+		expect(parseConfig({ agentPaths: ["  a  ", "", 42, "b"] }, entryDiagnostics).agentPaths).toEqual(["a", "b"]);
+		expect(entryDiagnostics.filter((d) => d.message.includes("non-string entry"))).toHaveLength(2);
+	});
+
+	it("parseScope mirrors agentPaths validation", () => {
+		const diagnostics: AgentDiagnostic[] = [];
+		expect(parseConfig({}, diagnostics).scope).toBeUndefined();
+		expect(parseConfig({ scope: 5 }, diagnostics).scope).toBeUndefined();
+		expect(diagnostics.some((d) => d.message.includes("scope is not a list"))).toBe(true);
+		const entryDiagnostics: AgentDiagnostic[] = [];
+		expect(parseConfig({ scope: [" x ", ""] }, entryDiagnostics).scope).toEqual(["x"]);
+	});
+
+	it("parseApprovals drops malformed entries and defaults kind/approvedAt", () => {
+		const diagnostics: AgentDiagnostic[] = [];
+		const config = parseConfig(
+			{ approvals: { "/dir": { good: { hash: "abc" }, empty: { hash: "" }, scalar: 42 }, "/bad": 5 } },
+			diagnostics,
+		);
+		expect(config.approvals["/dir"].good).toEqual({ hash: "abc", kind: "project", approvedAt: 0 });
+		expect(config.approvals["/dir"].empty).toBeUndefined();
+		expect(config.approvals["/dir"].scalar).toBeUndefined();
+		expect(config.approvals["/bad"]).toBeUndefined();
+		expect(diagnostics.filter((d) => d.message.includes("malformed"))).toHaveLength(2);
+		expect(diagnostics.some((d) => d.message.includes("are not an object"))).toBe(true);
+		expect(parseConfig({ approvals: 5 }, []).approvals).toEqual({});
+	});
+
+	it("parseApprovals keeps well-typed kind and approvedAt", () => {
+		const config = parseConfig({ approvals: { "/d": { f: { hash: "h", kind: "config", approvedAt: 123 } } } }, []);
+		expect(config.approvals["/d"].f).toEqual({ hash: "h", kind: "config", approvedAt: 123 });
+	});
+
+	it("parseLimits floors counts, keeps cost and drops invalid values/keys", () => {
+		const diagnostics: AgentDiagnostic[] = [];
+		const config = parseConfig(
+			{ limits: { maxTurns: 2.9, timeoutMs: 100, tokenBudget: 0, costBudget: 1.25, bogus: 1, neg: -1 } },
+			diagnostics,
+		);
+		expect(config.limits).toEqual({ maxTurns: 2, timeoutMs: 100, costBudget: 1.25 });
+		expect(diagnostics.filter((d) => d.message.includes("is not a known limit"))).toHaveLength(2);
+	});
+
+	it("parseLimits ignores a non-object and non-finite values", () => {
+		expect(parseConfig({ limits: 5 }, []).limits).toEqual({});
+		expect(parseConfig({ limits: { maxTurns: Infinity, timeoutMs: "x" } }, []).limits).toEqual({});
+	});
+
+	it("serializeConfig sorts keys, keeps version and emits a trailing newline", () => {
+		const config = defaultConfig();
+		config.approvals = {
+			"/z": { b: { hash: "2", kind: "project", approvedAt: 0 }, a: { hash: "1", kind: "project", approvedAt: 0 } },
+			"/a": {},
+		};
+		const text = serializeConfig(config);
+		expect(text.endsWith("\n")).toBe(true);
+		const parsed = JSON.parse(text);
+		expect(Object.keys(parsed.approvals)).toEqual(["/a", "/z"]);
+		expect(Object.keys(parsed.approvals["/z"])).toEqual(["a", "b"]);
+		expect(parsed.version).toBe(CONFIG_VERSION);
+		expect(parsed.scope).toBeUndefined();
+	});
+
+	it("serializeConfig includes scope and every present limit, omits absent ones", () => {
+		const config = defaultConfig();
+		config.scope = ["/a"];
+		config.limits = { maxTurns: 1, timeoutMs: 2, tokenBudget: 3, costBudget: 4.5 };
+		const parsed = JSON.parse(serializeConfig(config));
+		expect(parsed.scope).toEqual(["/a"]);
+		expect(parsed.limits).toEqual({ maxTurns: 1, timeoutMs: 2, tokenBudget: 3, costBudget: 4.5 });
+		const onlyTurns = defaultConfig();
+		onlyTurns.limits = { maxTurns: 5 };
+		expect(JSON.parse(serializeConfig(onlyTurns)).limits).toEqual({ maxTurns: 5 });
+	});
+
+	it("resolveAgentPath expands ~, ~/ and resolves relative and absolute", () => {
+		const previous = process.env.HOME;
+		process.env.HOME = "/home/u";
+		try {
+			expect(resolveAgentPath("~", "/base")).toBe("/home/u");
+			expect(resolveAgentPath("~/x", "/base")).toBe("/home/u/x");
+			expect(resolveAgentPath("rel", "/base")).toBe("/base/rel");
+			expect(resolveAgentPath("/abs", "/base")).toBe("/abs");
+		} finally {
+			process.env.HOME = previous;
+		}
+	});
+
+	it("config store load returns defaults when the file is missing", () => {
+		const store = createConfigStore(agentDir);
+		expect(store.load()).toEqual({ config: defaultConfig(), diagnostics: [] });
+	});
+
+	it("config store load warns when the path is not a regular file", () => {
+		const store = createConfigStore(agentDir);
+		mkdirSync(store.path, { recursive: true });
+		try {
+			const result = store.load();
+			expect(result.config).toEqual(defaultConfig());
+			expect(result.diagnostics[0].message).toContain("not a regular file");
+		} finally {
+			rmSync(store.path, { recursive: true, force: true });
+		}
+	});
+
+	it("config store load warns and uses defaults for invalid JSON", () => {
+		const store = createConfigStore(agentDir);
+		mkdirSync(join(agentDir, "extensions"), { recursive: true });
+		writeFileSync(store.path, "{ not json");
+		const result = store.load();
+		expect(result.config).toEqual(defaultConfig());
+		expect(result.diagnostics[0].message).toContain("could not read");
+	});
+
+	it("config store round-trips and resolves paths against the extensions dir", () => {
+		const store = createConfigStore(agentDir);
+		store.save({ ...defaultConfig(), agentPaths: ["a"], scope: ["b"] });
+		expect(statSync(store.path).isFile()).toBe(true);
+		expect(readFileSync(store.path, "utf8").endsWith("\n")).toBe(true);
+		const loaded = store.load().config;
+		expect(loaded.agentPaths).toEqual([join(agentDir, "extensions", "a")]);
+		expect(loaded.scope).toEqual([join(agentDir, "extensions", "b")]);
+	});
+
+	it("config store save throws when the target path is a directory", () => {
+		const store = createConfigStore(agentDir);
+		mkdirSync(store.path, { recursive: true });
+		try {
+			expect(() => store.save(defaultConfig())).toThrow();
+		} finally {
+			rmSync(store.path, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("config: survivor kills", () => {
+	it("pins the approval max age to 180 days", () => {
+		expect(APPROVAL_MAX_AGE_MS).toBe(180 * 24 * 60 * 60 * 1000);
+		expect(APPROVAL_MAX_AGE_MS).toBe(15_552_000_000);
+	});
+
+	it("defaultConfig is exactly the documented empty shape", () => {
+		expect(defaultConfig()).toEqual({ version: CONFIG_VERSION, agentPaths: [], approvals: {}, limits: {} });
+	});
+
+	it("parseConfig returns empty agentPaths when the field is absent", () => {
+		expect(parseConfig({}, []).agentPaths).toEqual([]);
+	});
+
+	it("drops whitespace-only agentPaths and scope entries", () => {
+		const paths = [] as AgentDiagnostic[];
+		expect(parseConfig({ agentPaths: ["   ", "  real  "] }, paths).agentPaths).toEqual(["real"]);
+		expect(paths.some((d) => d.message.includes("non-string entry"))).toBe(true);
+
+		const scopeDiags = [] as AgentDiagnostic[];
+		expect(parseConfig({ scope: ["   "] }, scopeDiags).scope).toEqual([]);
+		expect(scopeDiags.some((d) => d.message.includes("non-string entry"))).toBe(true);
+	});
+
+	it("names a non-object approvals and limits block", () => {
+		const approvalsDiags = [] as AgentDiagnostic[];
+		parseConfig({ approvals: 5 }, approvalsDiags);
+		expect(approvalsDiags.some((d) => d.message === "config approvals is not an object; ignored")).toBe(true);
+
+		const limitsDiags = [] as AgentDiagnostic[];
+		parseConfig({ limits: 5 }, limitsDiags);
+		expect(limitsDiags.some((d) => d.message === "config limits is not an object; ignored")).toBe(true);
+	});
+
+	it("serializes approvals with sorted directories and file names", () => {
+		const entry = { hash: "h", kind: "project", approvedAt: 1 };
+		const text = serializeConfig({
+			version: CONFIG_VERSION,
+			agentPaths: [],
+			approvals: { "/b": { "b.md": entry }, "/a": { "z.md": entry, "a.md": entry } },
+			limits: {},
+		});
+		expect(text.indexOf('"/a"')).toBeLessThan(text.indexOf('"/b"'));
+		expect(text.indexOf('"a.md"')).toBeLessThan(text.indexOf('"z.md"'));
+		expect(text).toContain("\n\t");
+	});
+
+	it("isOutsideRoots is false when any root contains the path", () => {
+		const a = join(root, "a");
+		const b = join(root, "b");
+		mkdirSync(a, { recursive: true });
+		mkdirSync(b, { recursive: true });
+		expect(isOutsideRoots(join(b, "file.txt"), [a, b])).toBe(false);
+		expect(isOutsideRoots(join(root, "elsewhere", "file.txt"), [a, b])).toBe(true);
 	});
 });

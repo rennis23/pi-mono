@@ -177,3 +177,66 @@ describe("mapWithConcurrencyLimit", () => {
 		await expect(promise).rejects.toThrow("boom");
 	});
 });
+
+describe("concurrency: boundary hardening", () => {
+	it("normalizeConcurrency clamps and floors", () => {
+		expect(normalizeConcurrency(undefined)).toBe(1);
+		expect(normalizeConcurrency(Number.NaN)).toBe(1);
+		expect(normalizeConcurrency(0)).toBe(1);
+		expect(normalizeConcurrency(-3)).toBe(1);
+		expect(normalizeConcurrency(2.9)).toBe(2);
+		expect(normalizeConcurrency(1)).toBe(1);
+		expect(normalizeConcurrency(MAX_CONCURRENCY)).toBe(MAX_CONCURRENCY);
+		expect(normalizeConcurrency(MAX_CONCURRENCY + 10)).toBe(MAX_CONCURRENCY);
+	});
+
+	it("taskCountError validates integer bounds", () => {
+		expect(taskCountError(0)).toBeUndefined();
+		expect(taskCountError(MAX_TASKS)).toBeUndefined();
+		expect(taskCountError(-1)).toContain("invalid task count");
+		expect(taskCountError(1.5)).toContain("invalid task count");
+		expect(taskCountError(MAX_TASKS + 1)).toContain("too many tasks");
+	});
+
+	it("mapWithConcurrencyLimit handles an empty list and preserves order", async () => {
+		expect(await mapWithConcurrencyLimit([], 4, async (n: number) => n)).toEqual([]);
+		expect(await mapWithConcurrencyLimit([3, 1, 2], 2, async (n) => n * 2)).toEqual([6, 2, 4]);
+	});
+
+	it("mapWithConcurrencyLimit rejects with the abort reason", async () => {
+		const controller = new AbortController();
+		controller.abort(new Error("nope"));
+		await expect(mapWithConcurrencyLimit([1], 1, async (n) => n, controller.signal)).rejects.toThrow("nope");
+	});
+
+	it("mapWithConcurrencyLimit passes a non-aborted signal when none is given", async () => {
+		const seen: boolean[] = [];
+		await mapWithConcurrencyLimit([1, 2], 1, async (_n, _i, signal) => {
+			seen.push(signal.aborted);
+		});
+		expect(seen).toEqual([false, false]);
+	});
+});
+
+describe("concurrency: survivor kills", () => {
+	it("rejects an abort with a non-Error reason using the default message", async () => {
+		const controller = new AbortController();
+		controller.abort("plain reason");
+		await expect(mapWithConcurrencyLimit([1], 1, async (n) => n, controller.signal)).rejects.toThrow("aborted");
+	});
+
+	it("does not pull a new item after another worker failed", async () => {
+		const gate = deferred<void>();
+		const ran: number[] = [];
+		const promise = mapWithConcurrencyLimit([0, 1, 2], 2, async (_item, index) => {
+			ran.push(index);
+			if (index === 0) throw new Error("first-fails");
+			if (index === 1) await gate.promise;
+			return index;
+		});
+		await expect(promise).rejects.toThrow("first-fails");
+		gate.resolve(undefined);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(ran).toEqual([0, 1]);
+	});
+});

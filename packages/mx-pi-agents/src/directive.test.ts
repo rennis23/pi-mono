@@ -57,9 +57,12 @@ describe("parseDirective: single agent", () => {
 		expect(error("# ")).toContain("no agent named");
 	});
 
-	it("rejects a missing task", () => {
-		expect(error("#explorer")).toContain("missing a prompt");
-		expect(error("#explorer   ")).toContain("missing a prompt");
+	it("parses a bare single name as a task-less directive", () => {
+		const directive = ok("#explorer");
+		expect(directive.stages).toEqual([{ agents: ["explorer"] }]);
+		expect(directive.task).toBeUndefined();
+		const spaced = ok("#explorer   ");
+		expect(spaced.task).toBeUndefined();
 	});
 
 	it("rejects a malformed name", () => {
@@ -125,5 +128,64 @@ describe("parseDirective: delimiter hints", () => {
 	it("points at brackets for an inline pipeline", () => {
 		expect(error("#builder > explorer do it")).toContain("require brackets");
 		expect(error("#builder,explorer do it")).toContain("require brackets");
+	});
+});
+
+describe("directive: boundary hardening", () => {
+	it("parses a bare name with and without a task", () => {
+		expect(ok("#agent").task).toBeUndefined();
+		expect(ok("#agent do it").task).toBe("do it");
+		expect(ok("#agent\ttab task").task).toBe("tab task");
+	});
+
+	it("rejects an overlong or invalid name", () => {
+		expect(error(`#${"a".repeat(65)}`)).toContain("invalid agent name");
+		expect(error("#-bad")).toContain("invalid agent name");
+	});
+
+	it("rejects a bare name followed by a pipeline delimiter", () => {
+		expect(error("#a > b")).toContain("require brackets");
+		expect(error("#a, b")).toContain("require brackets");
+	});
+
+	it("parses a bracketed pipeline and trims the task", () => {
+		const directive = ok("#[a > b, c]   do it  ");
+		expect(directive.pipeline).toBe(true);
+		expect(directive.stages).toEqual([{ agents: ["a"] }, { agents: ["b", "c"] }]);
+		expect(directive.task).toBe("do it");
+	});
+
+	it("rejects empty, unclosed and promptless pipelines", () => {
+		expect(error("#[] x")).toContain("empty pipeline");
+		expect(error("#[a x")).toContain("unclosed pipeline");
+		expect(error("#[a]")).toContain("missing a prompt");
+	});
+});
+
+describe("directive: survivor kills", () => {
+	it("includes the usage in an empty-name error", () => {
+		expect(error("#   ")).toContain('Usage: "#agent [prompt]"');
+	});
+
+	it("rejects a name starting with a non-alphanumeric", () => {
+		expect(error("#_bad")).toContain("invalid agent name");
+		expect(error("#-bad")).toContain("invalid agent name");
+	});
+
+	it("accepts a 64-char name and rejects a 65th name character", () => {
+		expect(ok(`#${"a".repeat(64)}`).stages[0].agents[0]).toHaveLength(64);
+		expect(error(`#${"a".repeat(65)}`)).toContain("invalid agent name");
+	});
+
+	it("trims the task text after a tab", () => {
+		expect(ok("#a\t  hi there  ").task).toBe("hi there");
+	});
+
+	it("trims the pipeline task after a tab", () => {
+		expect(ok("#[a > b]\t  do it  ").task).toBe("do it");
+	});
+
+	it("requires whitespace between name and task", () => {
+		expect(ok("#a").task).toBeUndefined();
 	});
 });

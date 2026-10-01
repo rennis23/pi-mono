@@ -9,7 +9,7 @@
 
 import { parseFrontmatter } from "./frontmatter.js";
 import { sanitizeUiText } from "./security.js";
-import type { AgentDefinition, AgentDiagnostic, ThinkingLevel, ToolsInheritance } from "./types.js";
+import type { AgentDefinition, AgentDiagnostic, AgentKind, ThinkingLevel, ToolsInheritance } from "./types.js";
 
 /** Name charset: lowercase slug, starts alphanumeric, max 64 chars. */
 const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -20,6 +20,9 @@ const MODEL_PATTERN = /^[A-Za-z0-9._/:-]{1,200}$/;
 /** Scope entries: non-empty, no control characters, bounded length. */
 const PATH_ENTRY_PATTERN = /^[^\u0000-\u001F\u007F]{1,1024}$/;
 const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const AGENT_KINDS: readonly AgentKind[] = ["persona", "main", "sub"];
+/** The reset name always wins; a definition may never claim it. */
+export const RESERVED_AGENT_NAME = "none";
 
 export const MAX_MAX_TURNS = 1_000;
 export const MAX_TIMEOUT_MS = 86_400_000;
@@ -146,6 +149,7 @@ function readPathList(data: Record<string, unknown>, key: string, errors: string
 const KNOWN_FIELDS = new Set([
 	"name",
 	"description",
+	"kind",
 	"tools",
 	"tools_inheritance",
 	"scope",
@@ -177,7 +181,9 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 
 	const rawName = readString(data, "name", errors);
 	if (rawName === undefined) errors.push("name is required");
-	else if (!NAME_PATTERN.test(rawName)) {
+	else if (rawName === RESERVED_AGENT_NAME) {
+		errors.push(`name "${RESERVED_AGENT_NAME}" is reserved for the built-in reset`);
+	} else if (!NAME_PATTERN.test(rawName)) {
 		errors.push('name must match [a-z0-9][a-z0-9_-]{0,63} (lowercase letters, digits, "-", "_")');
 	}
 
@@ -189,6 +195,19 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 
 	const tools = readToolList(data, "tools", errors);
 	const scope = readPathList(data, "scope", errors);
+
+	// Kind parsing is total and fail-closed: absent means `main`; a value that is
+	// not exactly one of the three strings (or is not a string) fails the whole
+	// definition rather than falling back to a permissive default.
+	let kind: AgentKind = "main";
+	if (data.kind !== undefined && data.kind !== null) {
+		if (typeof data.kind === "string" && (AGENT_KINDS as readonly string[]).includes(data.kind)) {
+			kind = data.kind as AgentKind;
+		} else {
+			errors.push(`kind must be one of: ${AGENT_KINDS.join(", ")}`);
+		}
+	}
+
 	let toolsInheritance: ToolsInheritance = "none";
 	if (data.tools_inheritance !== undefined && data.tools_inheritance !== null) {
 		if (data.tools_inheritance === "none" || data.tools_inheritance === "parent") {
@@ -240,6 +259,7 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 		definition: {
 			name: rawName!,
 			description: rawDescription!,
+			kind,
 			tools,
 			toolsInheritance,
 			scope,

@@ -159,3 +159,64 @@ describe("aggregateResults", () => {
 		expect(aggregateResults([])).toEqual({ text: "", truncated: false });
 	});
 });
+
+describe("output: boundary hardening", () => {
+	it("treats a non-finite cap as zero", () => {
+		expect(capText("abc", Number.POSITIVE_INFINITY)).toEqual(capText("abc", 0));
+		expect(capText("abc", Number.POSITIVE_INFINITY).truncated).toBe(true);
+		expect(capText("abc", Number.NEGATIVE_INFINITY).truncated).toBe(true);
+	});
+
+	it("rejects secrets that are only whitespace", () => {
+		expect(redactSecrets("a        b", ["        "])).toBe("a        b");
+	});
+
+	it("matches the optional underscore in API_KEY", () => {
+		const redact = createRedactor({ APIKEY: "supersecret" });
+		expect(redact("supersecret")).toBe("[redacted]");
+	});
+
+	it("does not invent an extra default secret", () => {
+		expect(createRedactor({ API_KEY: "supersecret" })("Stryker was here!")).toBe("Stryker was here!");
+		expect(createRedactor({}, [])("Stryker was here!")).toBe("Stryker was here!");
+	});
+
+	it("capText returns text untouched when within the cap", () => {
+		expect(capText("abc", 10)).toEqual({ text: "abc", truncated: false });
+	});
+
+	it("capText treats non-positive or non-finite caps as zero", () => {
+		expect(capText("abc", 0).truncated).toBe(true);
+		expect(capText("abc", Number.NaN).truncated).toBe(true);
+	});
+
+	it("capText does not split a multi-byte character", () => {
+		const { text, truncated } = capText("€€€", 5);
+		expect(truncated).toBe(true);
+		expect(text.includes("\uFFFD")).toBe(false);
+	});
+
+	it("capText reports the omitted byte count", () => {
+		expect(capText("abcdef", 3).text).toContain("3 bytes omitted");
+	});
+
+	it("redactSecrets replaces every occurrence, longest first", () => {
+		expect(redactSecrets("secrettok secrettok", ["secrettok"])).toBe("[redacted] [redacted]");
+		expect(redactSecrets("abcdefghij", ["abcdefgh", "abcdefghij"])).toBe("[redacted]");
+	});
+
+	it("redactSecrets ignores short or whitespace-only secrets", () => {
+		expect(redactSecrets("abc", ["abc"])).toBe("abc");
+		expect(redactSecrets("hello world", ["   "])).toBe("hello world");
+	});
+
+	it("createRedactor only collects credential-looking env keys", () => {
+		const redact = createRedactor({ API_KEY: "supersecret", PASSWORD: "hunter2hunter2", HOME: "/home/x" });
+		expect(redact("supersecret /home/x hunter2hunter2")).toBe("[redacted] /home/x [redacted]");
+	});
+
+	it("createRedactor accepts explicit extra secrets and dedupes", () => {
+		const redact = createRedactor({}, ["extrasecret", "extrasecret"]);
+		expect(redact("extrasecret")).toBe("[redacted]");
+	});
+});

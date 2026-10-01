@@ -7,8 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `#name <task>` is now a main-session switch for the new
+  `persona`/`main` kinds instead of a child delegation. Definitions without a
+  `kind:` field default to `main`, so `#explorer <task>` switches the main
+  session. Delegation to the same agents remains available through
+  `#[explorer] <task>` and the `mx_pi_agent` tool. Definitions that should keep
+  delegating from a bare name must declare `kind: sub`.
+- `#none` is now reserved and resets the main session to plain pi. A definition
+  named `none` is dropped at discovery with a diagnostic.
+
 ### Added
 
+- Agent kinds: an optional `kind:` frontmatter field (`persona`, `main`, `sub`,
+  default `main`). A `persona`/`main` definition can be applied to the main
+  session with `#name`: `persona` replaces the system prompt prefix (the
+  `--system-prompt` code path) and `main` appends to the system prompt (the
+  `--append-system-prompt` code path). A switch also applies the definition's
+  `tools`, `model` and `thinking` as a preset, fail-closed, and records a
+  session-scoped custom entry so it survives a resume. `#none` restores the
+  exact pre-switch baseline; `sub` agents keep delegating. The active switch is
+  shown in the footer and the roster/autocomplete now show kind badges.
 - Child telemetry on the shared extension event bus: each in-process child run
   loads one in-process inline extension that re-publishes its lifecycle events
   (`session_start`, `context`, `before_provider_request`, `message_end`,

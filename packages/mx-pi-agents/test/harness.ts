@@ -18,6 +18,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { createEventBus, type EventBus } from "@earendil-works/pi-coding-agent";
 import { vi } from "vitest";
+import type { ThinkingLevel } from "../src/types.js";
 
 /** Theme that echoes plain text, keeping assertions free of ANSI codes. */
 export const mockTheme = {
@@ -55,6 +56,8 @@ export interface HarnessOptions {
 	hasUI?: boolean;
 	/** Tool names reported by `pi.getActiveTools()`. */
 	activeTools?: string[];
+	/** Tool names reported by `pi.getAllTools()`. Defaults to the built-in set. */
+	allTools?: string[];
 	/** Flag values, keyed by flag name. */
 	flags?: Record<string, boolean | string>;
 	/** Confirmation dialog result. Default false (refuse). */
@@ -63,6 +66,10 @@ export interface HarnessOptions {
 	env?: Record<string, string>;
 	/** Session id reported by `ctx.sessionManager.getSessionId()`. */
 	sessionId?: string;
+	/** Initial session branch entries; `appendEntry` adds to the same list. */
+	branch?: Array<Record<string, unknown>>;
+	/** Thinking level reported by `pi.getThinkingLevel()`. Default "medium". */
+	thinkingLevel?: ThinkingLevel;
 }
 
 export function createHarness(options: HarnessOptions = {}) {
@@ -84,12 +91,16 @@ export function createHarness(options: HarnessOptions = {}) {
 	const terminalHandlers: Array<(data: string) => unknown> = [];
 	/** Shared extension event bus, as `pi.events`. */
 	const events: EventBus = createEventBus();
+	/** Session branch entries: seeds plus anything appended via `pi.appendEntry`. */
+	const branchEntries: Array<Record<string, unknown>> = [...(options.branch ?? [])];
+	let activeTools = [...(options.activeTools ?? ["read", "grep", "bash"])];
+	let thinkingLevel: ThinkingLevel = options.thinkingLevel ?? "medium";
 
 	const ui = {
 		notify: vi.fn((message: string, type?: string) => {
 			notifications.push({ message, type });
 		}),
-		confirm: vi.fn(async () => options.confirmResult ?? false),
+		confirm: vi.fn(async (_title: string, _body?: string) => options.confirmResult ?? false),
 		select: vi.fn(async () => undefined),
 		input: vi.fn(async () => undefined),
 		setStatus: vi.fn(),
@@ -123,6 +134,7 @@ export function createHarness(options: HarnessOptions = {}) {
 		modelRegistry,
 		sessionManager: {
 			getSessionId: () => options.sessionId ?? "session-test",
+			getBranch: () => [...branchEntries],
 		},
 		model: undefined,
 		isIdle: () => true,
@@ -151,9 +163,23 @@ export function createHarness(options: HarnessOptions = {}) {
 		},
 		getFlag: (name: string) => flagValues.get(name),
 		events,
-		getActiveTools: () => options.activeTools ?? ["read", "grep", "bash"],
-		getAllTools: () => [],
-		setActiveTools: vi.fn(),
+		getActiveTools: () => [...activeTools],
+		getAllTools: () =>
+			(options.allTools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"]).map((name) => ({ name })),
+		setActiveTools: vi.fn((toolNames: string[]) => {
+			activeTools = [...toolNames];
+		}),
+		getThinkingLevel: () => thinkingLevel,
+		setThinkingLevel: vi.fn((level: ThinkingLevel) => {
+			thinkingLevel = level;
+		}),
+		setModel: vi.fn(async (model: unknown) => {
+			(ctx as { model: unknown }).model = model;
+			return true;
+		}),
+		appendEntry: vi.fn((customType: string, data?: unknown) => {
+			branchEntries.push({ type: "custom", customType, data, id: `entry-${branchEntries.length}` });
+		}),
 		registerMessageRenderer: (customType: string, renderer: unknown) => {
 			messageRenderers.set(customType, renderer);
 		},
@@ -179,6 +205,12 @@ export function createHarness(options: HarnessOptions = {}) {
 		tools,
 		flags,
 		flagValues,
+		branchEntries,
+
+		/** Current active tools, after any `setActiveTools` call. */
+		activeTools: () => [...activeTools],
+		/** Current thinking level, after any `setThinkingLevel` call. */
+		currentThinking: () => thinkingLevel,
 
 		/** Invoke every registered handler for an event, in registration order. */
 		emit: async (event: string, payload: Record<string, unknown> = {}) => {

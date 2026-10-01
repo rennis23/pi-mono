@@ -54,6 +54,17 @@ export function planRun(agent: PinnedAgent, task: string, ctx: SessionContext): 
 	const diagnostics: AgentDiagnostic[] = [];
 	const definition = agent.definition;
 
+	// A persona only ever runs in the main session; refusing here means no child
+	// session is created for the tool, parallel, chain or pipeline paths alike
+	// (security invariant 14).
+	if (definition.kind === "persona") {
+		return refuse(
+			"persona-child",
+			`agent "${definition.name}" is a persona agent: it can only run in the main session`,
+			diagnostics,
+		);
+	}
+
 	const grants = computeEffectiveTools(definition, {
 		parentTools: ctx.parentTools,
 		availableTools: ctx.availableTools,

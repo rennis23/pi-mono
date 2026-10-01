@@ -19,6 +19,7 @@ function makeAgent(kind: SourceKind, name = "reviewer", hash = HASH): PinnedAgen
 	const definition: AgentDefinition = {
 		name,
 		description: `${name} description`,
+		kind: "main",
 		tools: ["read"],
 		toolsInheritance: "none",
 		scope: undefined,
@@ -194,5 +195,103 @@ describe("gatedAgents / withApprovals", () => {
 		const next = withApprovals(config, recordApproval({}, makeAgent("project"), NOW));
 		expect(config.approvals).toEqual({});
 		expect(next.approvals["/agents"]["reviewer.md"].hash).toBe(HASH);
+	});
+});
+
+describe("trust: boundary hardening", () => {
+	it("storedApproval never expires an approvedAt of 0", () => {
+		const ledger: ApprovalLedger = {
+			"/agents": { "a.md": { hash: HASH, kind: "project", approvedAt: 0 } },
+		};
+		expect(storedApproval(ledger, "/agents", "a.md", NOW + APPROVAL_MAX_AGE_MS * 10)).toBeDefined();
+	});
+
+	it("storedApproval expires only past the max age", () => {
+		const ledger: ApprovalLedger = { "/agents": { "a.md": { hash: HASH, kind: "project", approvedAt: NOW } } };
+		expect(storedApproval(ledger, "/agents", "a.md", NOW + APPROVAL_MAX_AGE_MS)).toBeDefined();
+		expect(storedApproval(ledger, "/agents", "a.md", NOW + APPROVAL_MAX_AGE_MS + 1)).toBeUndefined();
+	});
+
+	it("pruneApprovals keeps approvedAt 0 forever", () => {
+		const agent = makeAgent("project");
+		const ledger: ApprovalLedger = { "/agents": { "reviewer.md": { hash: HASH, kind: "project", approvedAt: 0 } } };
+		expect(pruneApprovals(ledger, [agent], NOW + APPROVAL_MAX_AGE_MS * 10).removed).toBe(0);
+	});
+
+	it("pruneApprovals drops empty directories and counts every removal", () => {
+		let ledger = recordApproval({}, makeAgent("project", "a"), NOW);
+		ledger = recordApproval(ledger, makeAgent("project", "b"), NOW);
+		const result = pruneApprovals(ledger, [], NOW);
+		expect(result.removed).toBe(2);
+		expect(result.approvals).toEqual({});
+		expect(result.diagnostics[0].message).toContain("pruned 2");
+	});
+
+	it("approvalRequest omits the consequence for a sub kind", () => {
+		const agent = makeAgent("project", "s");
+		agent.definition.kind = "sub";
+		expect(approvalRequest(agent).summary).not.toContain("system prompt");
+	});
+
+	it("approvalRequest describes the persona and main consequences", () => {
+		const persona = makeAgent("project", "p");
+		persona.definition.kind = "persona";
+		expect(approvalRequest(persona).summary).toContain("replace the main system prompt");
+		const main = makeAgent("project", "m");
+		main.definition.kind = "main";
+		expect(approvalRequest(main).summary).toContain("extend the main system prompt");
+	});
+
+	it("approvalRequest notes a sandboxed isolation and inherit rules", () => {
+		const agent = makeAgent("project");
+		agent.definition.sandbox = "os";
+		agent.definition.tools = undefined;
+		const summary = approvalRequest(agent).summary;
+		expect(summary).toContain("(sandboxed bash)");
+		expect(summary).toContain("(inherit rules)");
+	});
+
+	it("approvalRequest extracts a bare or Windows file name", () => {
+		const bare = makeAgent("project");
+		bare.source.path = "bare.md";
+		expect(approvalRequest(bare).fileName).toBe("bare.md");
+		const win = makeAgent("project");
+		win.source.path = "C:\\dir\\win.md";
+		expect(approvalRequest(win).fileName).toBe("win.md");
+	});
+
+	it("checkTrust marks a trusted agent alreadyApproved", () => {
+		const decision = checkTrust(makeAgent("bundled"), { hasUI: false, approvals: {}, now: () => NOW });
+		expect(decision).toEqual({ ok: true, alreadyApproved: true });
+	});
+});
+
+describe("trust: survivor kills", () => {
+	it("extracts a nested relative file name", () => {
+		const agent = makeAgent("project");
+		agent.source.path = "a/b.md";
+		expect(approvalRequest(agent).fileName).toBe("b.md");
+	});
+
+	it("lists kind, description, source, tools and the hash prefix", () => {
+		const summary = approvalRequest(makeAgent("project", "reviewer")).summary;
+		expect(summary).toContain("Kind: main");
+		expect(summary).toContain("Description: reviewer description");
+		expect(summary).toContain("Source: project — /agents/reviewer.md");
+		expect(summary).toContain(`Hash: ${HASH.slice(0, 12)}`);
+		expect(summary).not.toContain(HASH);
+		expect(summary).toContain("Tools: read");
+	});
+
+	it("omits the sandbox suffix for a non-os sandbox", () => {
+		const summary = approvalRequest(makeAgent("project")).summary;
+		expect(summary).not.toContain("sandboxed bash");
+		expect(summary).toContain("Isolation: process");
+	});
+
+	it("newline-joins the summary lines", () => {
+		const summary = approvalRequest(makeAgent("project")).summary;
+		expect(summary.split("\n").length).toBeGreaterThan(1);
+		expect(summary).toContain("Tools: read\nIsolation:");
 	});
 });
