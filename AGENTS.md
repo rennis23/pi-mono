@@ -21,14 +21,17 @@ Known follow-ups (release-script hardening, husky nits) are tracked in [TODO.md]
 
 ## Commands
 
-| Command                  | Purpose                                     |
-| ------------------------ | ------------------------------------------- |
-| `npm run check`          | Format, lint (Biome), and type-check (tsc)  |
-| `npm test`               | Run all tests                               |
-| `npm run coverage`       | Run tests with V8 coverage                  |
-| `npm run release:patch`  | Bump patch version across all packages      |
-| `npm run release:minor`  | Bump minor version across all packages      |
-| `npm run release:major`  | Bump major version across all packages      |
+| Command                      | Purpose                                    |
+| ---------------------------- | ------------------------------------------ |
+| `npm run check`              | Format, lint (Biome), and type-check (tsc) |
+| `npm test`                   | Run all tests                              |
+| `npm run coverage`           | Run tests with V8 coverage                 |
+| `npm run mutation`           | Full Stryker run (slow)                    |
+| `npm run mutation:changed`   | Stryker on changed files only              |
+| `npm run mutation:survivors` | List survivors from last report            |
+| `npm run release:patch`      | Bump patch version across all packages     |
+| `npm run release:minor`      | Bump minor version across all packages     |
+| `npm run release:major`      | Bump major version across all packages     |
 
 Run a single test:
 

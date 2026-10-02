@@ -27,6 +27,8 @@ function makeAgent(overrides: Partial<AgentDefinition> = {}, kind: SourceKind = 
 		tools: ["read", "grep"],
 		toolsInheritance: "none",
 		scope: undefined,
+		skills: undefined,
+		contextFiles: undefined,
 		model: undefined,
 		thinking: undefined,
 		maxTurns: undefined,

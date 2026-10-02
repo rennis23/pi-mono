@@ -123,8 +123,13 @@ Every definition has a `kind` in frontmatter. It is optional and defaults to
 | `sub` | not switchable; `#name <task>` delegates | allowed | body is the child prompt (runtime header + body) |
 
 A switch also applies the definition's `tools`, `model` and `thinking` as a
-preset and restores the pre-switch values on `#none`. Child-only fields
-(`scope`, `tools_inheritance`, `max_turns`, `timeout_ms`, `token_budget`,
+preset and restores the pre-switch values on `#none`. While it is active,
+`skills` and `context_files` narrow what the resource loader puts into the
+prompt: absent means every loaded entry, `[]` means none, a list is an
+allow-list (unknown entries match nothing). pi loads resources at session
+start, so a definition can only narrow: extension handlers, `/skill:*`
+commands and extension-contributed prompt sections stay loaded. Child-only
+fields (`scope`, `tools_inheritance`, `max_turns`, `timeout_ms`, `token_budget`,
 `cost_budget`, `isolation`, `sandbox`) are ignored in main mode. The preset is
 applied fail-closed: if any declared tool does not resolve in the main session,
 or a declared model is unavailable, the whole switch is refused and nothing
@@ -207,10 +212,13 @@ this bus, so it publishes nothing.
 | `planner` | read, grep, find, ls | Ordered implementation plan with risks and verification steps |
 | `reviewer` | read, grep, find, ls | Defect-focused code review, severity-ranked |
 | `builder` | read, grep, find, ls, edit, write, bash | Scoped implementation with tests and self-verification |
+| `socrates` | none (persona) | Socratic questioning of a problem with a chosen number of questions; proposes no answers |
 
 `builder` is the only bundled agent with write access and a shell; its `bash`
 runs under `sandbox: os`, and every bundled file tool is path-confined to the
-run scope.
+run scope. `socrates` is the bundled `persona` with no tools, skills or project
+context at all: switch to it with `#socrates`, describe a problem, and choose a
+question depth of `1-3`, `3-5`, `7-9` or `10-12`.
 
 ## Writing an agent
 
@@ -242,6 +250,8 @@ You are a review agent. Report findings as a list, most severe first.
 | `description` | yes | ≤ 512 chars | Shown in the roster |
 | `kind` | no | `main` (default), `persona`, `sub` | What a bare `#name` does. See [agent kinds](#agent-kinds) |
 | `tools` | no | list of tool names | **Absent ≠ empty.** `[]` means no tools |
+| `skills` | no | list of skill names | Main-session (`persona`/`main`) skill allow-list. Absent = all loaded skills; `[]` = none; unknown names match nothing |
+| `context_files` | no | list of paths | Main-session project-context allow-list. An entry matches the absolute path, the cwd-relative path or the basename. Absent = all loaded files; `[]` = none |
 | `tools_inheritance` | no | `none` (default), `parent` | Ignored when `tools` is present |
 | `scope` | no | list of paths | Directory roots this agent may touch. Absent = the run's cwd; `[]` is a refusal. Must be beneath the config ceiling and below cwd |
 | `model` | no | `provider/model-id` or model id | Must resolve with configured credentials |

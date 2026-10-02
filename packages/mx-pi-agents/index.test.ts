@@ -775,6 +775,65 @@ describe("# main-session switching", () => {
 		expect(mainOptions.appendSystemPrompt).toBe("BASE\n\nBody for helper.");
 	});
 
+	it("narrows skills and context files to the persona's allow-lists", async () => {
+		writeAgent(join(agentDir, "agents"), "style", "kind: persona\nskills: [alpha]\ncontext_files: [AGENTS.md]\n");
+		await start();
+		await emitInput({ text: "#style" });
+
+		const alpha = { name: "alpha", description: "a", filePath: "/skills/alpha/SKILL.md" };
+		const kept = { path: join(cwd, "AGENTS.md"), content: "project" };
+		const options: Record<string, unknown> = {
+			customPrompt: undefined,
+			appendSystemPrompt: "",
+			skills: [alpha, { name: "beta", description: "b" }],
+			contextFiles: [kept, { path: join(cwd, "docs", "notes.md"), content: "notes" }],
+		};
+		await harness.emit("before_agent_start", { systemPromptOptions: options, systemPrompt: "", prompt: "" });
+
+		expect(options.customPrompt).toBe("Body for style.");
+		expect(options.skills).toEqual([alpha]);
+		expect(options.contextFiles).toEqual([kept]);
+	});
+
+	it("leaves skills and context files untouched when the persona does not declare them", async () => {
+		writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
+		await start();
+		await emitInput({ text: "#style" });
+
+		const skills = [{ name: "alpha", description: "a" }];
+		const contextFiles = [{ path: join(cwd, "AGENTS.md"), content: "project" }];
+		const options: Record<string, unknown> = {
+			customPrompt: undefined,
+			appendSystemPrompt: "",
+			skills,
+			contextFiles,
+		};
+		await harness.emit("before_agent_start", { systemPromptOptions: options, systemPrompt: "", prompt: "" });
+
+		expect(options.skills).toEqual(skills);
+		expect(options.contextFiles).toEqual(contextFiles);
+	});
+
+	it("restores skills and context files after #none", async () => {
+		writeAgent(join(agentDir, "agents"), "style", "kind: persona\nskills: []\ncontext_files: []\n");
+		await start();
+		await emitInput({ text: "#style" });
+		await emitInput({ text: "#none" });
+
+		const skills = [{ name: "alpha", description: "a" }];
+		const contextFiles = [{ path: join(cwd, "AGENTS.md"), content: "project" }];
+		const options: Record<string, unknown> = {
+			customPrompt: undefined,
+			appendSystemPrompt: "",
+			skills,
+			contextFiles,
+		};
+		await harness.emit("before_agent_start", { systemPromptOptions: options, systemPrompt: "", prompt: "" });
+
+		expect(options.skills).toEqual(skills);
+		expect(options.contextFiles).toEqual(contextFiles);
+	});
+
 	it("resets to plain pi with #none and refuses a task", async () => {
 		writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
 		await start();

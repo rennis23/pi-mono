@@ -36,6 +36,8 @@ export interface MakeAgentOptions {
 	tools?: string[] | undefined;
 	toolsInheritance?: AgentDefinition["toolsInheritance"];
 	scope?: string[];
+	skills?: string[] | undefined;
+	contextFiles?: string[] | undefined;
 	model?: string;
 	thinking?: AgentDefinition["thinking"];
 	maxTurns?: number;
@@ -59,6 +61,8 @@ function frontmatterFor(options: MakeAgentOptions, name: string): string {
 	if (options.tools !== undefined) lines.push(`tools: [${options.tools.join(", ")}]`);
 	if (options.toolsInheritance !== undefined) lines.push(`tools_inheritance: ${options.toolsInheritance}`);
 	if (options.scope !== undefined) lines.push(`scope: [${options.scope.join(", ")}]`);
+	if (options.skills !== undefined) lines.push(`skills: [${options.skills.join(", ")}]`);
+	if (options.contextFiles !== undefined) lines.push(`context_files: [${options.contextFiles.join(", ")}]`);
 	if (options.model !== undefined) lines.push(`model: ${options.model}`);
 	if (options.thinking !== undefined) lines.push(`thinking: ${options.thinking}`);
 	if (options.maxTurns !== undefined) lines.push(`max_turns: ${options.maxTurns}`);
@@ -93,6 +97,8 @@ export function makeAgent(options: MakeAgentOptions = {}): PinnedAgent {
 		tools: options.tools,
 		toolsInheritance: options.toolsInheritance ?? "none",
 		scope: options.scope,
+		skills: options.skills,
+		contextFiles: options.contextFiles,
 		model: options.model,
 		thinking: options.thinking,
 		maxTurns: options.maxTurns,

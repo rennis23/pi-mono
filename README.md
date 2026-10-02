@@ -44,7 +44,25 @@ npm run release:minor
 npm run release:major
 ```
 
+## Mutation testing
+
+Stryker mutation testing is configured at the repo root (`stryker.config.json`)
+and scoped to `packages/mx-pi-agents`.
+
+```bash
+npm run mutation             # full run (slow, ~22 min)
+npm run mutation:changed     # only files changed vs HEAD (fast local feedback)
+npm run mutation:changed -- master
+npm run mutation:changed -- HEAD --list   # print the mutate list, run nothing
+npm run mutation:survivors   # survived / uncovered mutants from the last report
+```
+
+`mutation:changed` diffs against `HEAD` by default (staged, unstaged and
+untracked files) and takes any git ref as its first argument. When no mutable
+source file changed it exits 0 without invoking Stryker. Unknown flags are
+passed through to `stryker run`, e.g. `npm run mutation:changed -- --ignoreStatic`.
+
 ## Husky hooks
 
 - `pre-commit` runs formatting, linting, and type checking.
-- `pre-push` runs the test suite.
+- `pre-push` runs the test suite and the full `npm run mutation` gate.

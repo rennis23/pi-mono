@@ -58,6 +58,18 @@ export interface AgentDefinition {
 	 * Entries tighten the configured ceiling and are resolved against the cwd.
 	 */
 	scope: string[] | undefined;
+	/**
+	 * Main-session skill allow-list. `undefined` means the field was absent (all
+	 * loaded skills survive the switch); `[]` means the field was present and
+	 * empty (no skills). Ignored for child runs; enforced while this definition
+	 * is the active main-session switch.
+	 */
+	skills: string[] | undefined;
+	/**
+	 * Main-session project-context-file allow-list, matched by absolute path,
+	 * cwd-relative path or basename. Same absent/empty semantics as `skills`.
+	 */
+	contextFiles: string[] | undefined;
 	model: string | undefined;
 	thinking: ThinkingLevel | undefined;
 	maxTurns: number | undefined;

@@ -72,6 +72,7 @@ import {
 	renderResultLines,
 	renderRosterLines,
 } from "./src/render.js";
+import { filterContextFiles, filterSkills } from "./src/resources.js";
 import { type RunnerRegistry, selectRunner, unavailableRunner } from "./src/runner.js";
 import { createInProcessRunner } from "./src/runners/in-process.js";
 import { isSandboxAvailable } from "./src/runners/sandbox.js";
@@ -844,6 +845,15 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 				options.appendSystemPrompt = [options.appendSystemPrompt, agent.definition.body]
 					.filter((part) => part.length > 0)
 					.join("\n\n");
+			}
+			// Narrow the loaded resources to the definition's allow-lists. Absent
+			// fields stay untouched; `[]` empties the section. pi has no unload call,
+			// so this is the only enforcement point for a live switch.
+			if (agent.definition.skills !== undefined) {
+				options.skills = filterSkills(options.skills, agent.definition.skills);
+			}
+			if (agent.definition.contextFiles !== undefined) {
+				options.contextFiles = filterContextFiles(options.contextFiles, agent.definition.contextFiles, ctx.cwd);
 			}
 		} catch {
 			/* a disposing session must never crash a turn; the base prompt is used */

@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Main-session resource allow-lists: `skills` and `context_files` frontmatter
+  fields on a `persona`/`main` definition narrow the prompt sections pi's
+  resource loader renders (skills and project context) while the switch is
+  active. List semantics mirror `tools`: absent = inherit the loaded set,
+  `[]` = none, `[a, b]` = only those entries. pi has no unload call, so a
+  definition can only narrow; unknown entries match nothing. The bundled
+  `socrates` persona now declares `skills: []` and `context_files: []` on top of
+  `tools: []`.
 - Agent kinds: an optional `kind:` frontmatter field (`persona`, `main`, `sub`,
   default `main`). A `persona`/`main` definition can be applied to the main
   session with `#name`: `persona` replaces the system prompt prefix (the
@@ -56,7 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional OS-level bash sandbox (`sandbox: os`) for platforms with a supported
   backend.
 - Bundled read-only `explorer`, `planner` and `reviewer` agents plus the writing
-  `builder` agent.
+  `builder` agent, and the bundled `socrates` `persona` (no tools) that
+  interrogates a problem with a chosen number of Socratic questions.
 - `mx_pi_agent` tool, `/mx-pi-agents list|approve|status|refresh` command, and
   `--mx-pi-agents-list` / `--mx-pi-agents-disable` flags.
 - Per-run path scope: the config `scope` ceiling and the definition `scope`

@@ -37,6 +37,8 @@ describe("parseAgentDefinition", () => {
 						"description: Read-only code review",
 						"tools: [read, grep, find, ls]",
 						"scope: [src, docs]",
+						"skills: [alpha, beta-1]",
+						"context_files: [AGENTS.md, docs/notes.md]",
 						"model: anthropic/claude-sonnet-4-5",
 						"thinking: medium",
 						"max_turns: 20",
@@ -54,6 +56,8 @@ describe("parseAgentDefinition", () => {
 		expect(definition.description).toBe("Read-only code review");
 		expect(definition.tools).toEqual(["read", "grep", "find", "ls"]);
 		expect(definition.scope).toEqual(["src", "docs"]);
+		expect(definition.skills).toEqual(["alpha", "beta-1"]);
+		expect(definition.contextFiles).toEqual(["AGENTS.md", "docs/notes.md"]);
 		expect(definition.model).toBe("anthropic/claude-sonnet-4-5");
 		expect(definition.thinking).toBe("medium");
 		expect(definition.maxTurns).toBe(20);
@@ -88,6 +92,61 @@ describe("parseAgentDefinition", () => {
 
 		const listed = expectOk(parseAgentDefinition(md("name: a\ndescription: d\nscope: [src, src, docs]")));
 		expect(listed.scope).toEqual(["src", "docs"]);
+	});
+
+	it("parses skills and context_files, keeping an empty list empty", () => {
+		const absent = expectOk(parseAgentDefinition(md("name: a\ndescription: d")));
+		expect(absent.skills).toBeUndefined();
+		expect(absent.contextFiles).toBeUndefined();
+
+		const empty = expectOk(parseAgentDefinition(md("name: a\ndescription: d\nskills: []\ncontext_files: []")));
+		expect(empty.skills).toEqual([]);
+		expect(empty.contextFiles).toEqual([]);
+
+		const listed = expectOk(
+			parseAgentDefinition(
+				md(
+					"name: a\ndescription: d\nskills: [alpha, alpha, beta-1]\ncontext_files: [AGENTS.md, docs/notes.md, docs/notes.md]",
+				),
+			),
+		);
+		expect(listed.skills).toEqual(["alpha", "beta-1"]);
+		expect(listed.contextFiles).toEqual(["AGENTS.md", "docs/notes.md"]);
+	});
+
+	it("drops a definition whose skills or context_files are malformed", () => {
+		expectErr(
+			parseAgentDefinition(md("name: a\ndescription: d\nskills: alpha")),
+			"skills must be a list of skill names",
+		);
+		expectErr(
+			parseAgentDefinition(md("name: a\ndescription: d\nskills: [Alpha]")),
+			"skills contains an invalid skill name",
+		);
+		expectErr(
+			parseAgentDefinition(md("name: a\ndescription: d\nskills: [a_b]")),
+			"skills contains an invalid skill name",
+		);
+		expectErr(
+			parseAgentDefinition(md("name: a\ndescription: d\nskills: [a--b]")),
+			"skills contains an invalid skill name",
+		);
+		expectErr(
+			parseAgentDefinition(md("name: a\ndescription: d\nskills: [a-]")),
+			"skills contains an invalid skill name",
+		);
+		expectErr(
+			parseAgentDefinition(md("name: a\ndescription: d\nskills: [1]")),
+			"skills contains an invalid skill name",
+		);
+		expectErr(
+			parseAgentDefinition(md("name: a\ndescription: d\ncontext_files: AGENTS.md")),
+			"context_files must be a list of paths",
+		);
+		expectErr(
+			parseAgentDefinition(md("name: a\ndescription: d\ncontext_files: [AGENTS.md, 2]")),
+			"context_files contains an invalid path entry",
+		);
 	});
 
 	it("drops a definition whose scope is the wrong shape", () => {
@@ -348,6 +407,28 @@ describe("schema: boundary hardening", () => {
 		rawErr({ ...base, scope: [""] }, "invalid path entry");
 		rawErr({ ...base, scope: ["a\u0007b"] }, "invalid path entry");
 		rawErr({ ...base, scope: ["x".repeat(1025)] }, "invalid path entry");
+	});
+
+	it("validates skill names per the Agent Skills charset and dedupes", () => {
+		expect(rawOk({ ...base, skills: ["alpha", "alpha", "beta-1"] }).skills).toEqual(["alpha", "beta-1"]);
+		rawErr({ ...base, skills: "alpha" }, "must be a list of skill names");
+		rawErr({ ...base, skills: [1] }, "invalid skill name");
+		rawErr({ ...base, skills: ["Alpha"] }, "invalid skill name");
+		rawErr({ ...base, skills: ["a_b"] }, "invalid skill name");
+		rawErr({ ...base, skills: ["-a"] }, "invalid skill name");
+		rawErr({ ...base, skills: ["a-"] }, "invalid skill name");
+		rawErr({ ...base, skills: ["a--b"] }, "invalid skill name");
+		rawErr({ ...base, skills: ["a".repeat(65)] }, "invalid skill name");
+	});
+
+	it("validates context_files entries and dedupes", () => {
+		expect(rawOk({ ...base, context_files: ["AGENTS.md", "AGENTS.md", "docs/x.md"] }).contextFiles).toEqual([
+			"AGENTS.md",
+			"docs/x.md",
+		]);
+		rawErr({ ...base, context_files: 5 }, "must be a list of paths");
+		rawErr({ ...base, context_files: [""] }, "invalid path entry");
+		rawErr({ ...base, context_files: [1] }, "invalid path entry");
 	});
 
 	it("validates kind, inheritance, thinking, isolation and sandbox enums", () => {

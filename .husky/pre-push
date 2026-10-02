@@ -10,7 +10,7 @@ fi
 echo "Tests passed."
 
 echo "Running mutation tests before push (Stryker; this takes a while)..."
-npm run mutation
+npm run mutation:changed
 if [ $? -ne 0 ]; then
   echo "❌ Mutation score is below the break threshold. Push aborted."
   echo "   Inspect reports/mutation/mutation.html, or bypass with: git push --no-verify"

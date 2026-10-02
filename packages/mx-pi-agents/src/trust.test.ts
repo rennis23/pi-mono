@@ -23,6 +23,8 @@ function makeAgent(kind: SourceKind, name = "reviewer", hash = HASH): PinnedAgen
 		tools: ["read"],
 		toolsInheritance: "none",
 		scope: undefined,
+		skills: undefined,
+		contextFiles: undefined,
 		model: undefined,
 		thinking: undefined,
 		maxTurns: undefined,

@@ -17,6 +17,12 @@ const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 /** Model labels are `provider/model-id` or a bare model id. */
 const MODEL_PATTERN = /^[A-Za-z0-9._/:-]{1,200}$/;
+/**
+ * Skill names follow pi's Agent Skills spec: lowercase a-z, digits and single
+ * hyphens, no leading/trailing hyphen and no consecutive hyphens.
+ */
+const SKILL_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$/;
+const MAX_SKILL_NAME_CHARS = 64;
 /** Scope entries: non-empty, no control characters, bounded length. */
 const PATH_ENTRY_PATTERN = /^[^\u0000-\u001F\u007F]{1,1024}$/;
 const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -122,6 +128,30 @@ function readToolList(data: Record<string, unknown>, key: string, errors: string
 	return out;
 }
 
+/** Read a string-list field holding skill names, deduping in order. */
+function readSkillList(data: Record<string, unknown>, key: string, errors: string[]): string[] | undefined {
+	const value = data[key];
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		errors.push(`${key} must be a list of skill names`);
+		return undefined;
+	}
+	const out: string[] = [];
+	for (const item of value) {
+		if (typeof item !== "string") {
+			errors.push(`${key} contains an invalid skill name`);
+			return undefined;
+		}
+		const name = item.trim();
+		if (name.length > MAX_SKILL_NAME_CHARS || !SKILL_NAME_PATTERN.test(name)) {
+			errors.push(`${key} contains an invalid skill name`);
+			return undefined;
+		}
+		if (!out.includes(name)) out.push(name);
+	}
+	return out;
+}
+
 /** Read a string-list field holding filesystem paths, deduping in order. */
 function readPathList(data: Record<string, unknown>, key: string, errors: string[]): string[] | undefined {
 	const value = data[key];
@@ -153,6 +183,8 @@ const KNOWN_FIELDS = new Set([
 	"tools",
 	"tools_inheritance",
 	"scope",
+	"skills",
+	"context_files",
 	"model",
 	"thinking",
 	"max_turns",
@@ -195,6 +227,8 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 
 	const tools = readToolList(data, "tools", errors);
 	const scope = readPathList(data, "scope", errors);
+	const skills = readSkillList(data, "skills", errors);
+	const contextFiles = readPathList(data, "context_files", errors);
 
 	// Kind parsing is total and fail-closed: absent means `main`; a value that is
 	// not exactly one of the three strings (or is not a string) fails the whole
@@ -263,6 +297,8 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 			tools,
 			toolsInheritance,
 			scope,
+			skills,
+			contextFiles,
 			model,
 			thinking,
 			maxTurns,
