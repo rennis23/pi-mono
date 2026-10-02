@@ -56,10 +56,15 @@ export function dispatchDirective(input: {
 	return { action: "switch", kind: input.kind };
 }
 
+/** The spawn-capable tool a delegating main-session switch keeps active. */
+export const DELEGATE_TOOL = "mx_pi_agent";
+
 /** Runtime facts the main-session switch needs. None come from the target repo. */
 export interface SwitchContext {
 	/** Every tool name that resolves in the main session. */
 	availableTools: readonly string[];
+	/** Names currently active in the main session (`pi.getActiveTools()`). */
+	currentTools: readonly string[];
 	/** Whether a declared `provider/id` model is available with credentials. */
 	isModelAvailable: (model: string) => boolean;
 }
@@ -81,7 +86,21 @@ export function planSwitch(agent: PinnedAgent, ctx: SwitchContext): SwitchOutcom
 
 	const applied: SwitchApplied = {};
 
-	if (definition.tools !== undefined) {
+	if (definition.delegate) {
+		// The declared preset wins; otherwise union the delegate tool onto whatever
+		// is active now, so switching from a narrowed agent (#planner) to an
+		// orchestrator restores the delegation capability.
+		const base = definition.tools ?? ctx.currentTools;
+		const merged = [...new Set([...base, DELEGATE_TOOL])];
+		const unresolved = merged.filter((name) => !ctx.availableTools.includes(name));
+		if (unresolved.length > 0) {
+			return {
+				ok: false,
+				refusal: `agent "${definition.name}" declares tools that do not resolve in the main session: ${unresolved.join(", ")}`,
+			};
+		}
+		applied.tools = merged;
+	} else if (definition.tools !== undefined) {
 		const unresolved = definition.tools.filter((name) => !ctx.availableTools.includes(name));
 		if (unresolved.length > 0) {
 			return {

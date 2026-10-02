@@ -14,6 +14,8 @@
  * - capability grants are total and fail closed; nothing widens them
  * - children get in-memory sessions, no discovery, and hard budgets
  * - the extension refuses to run inside a child (`MX_PI_AGENTS_CHILD=1`)
+ * - a `delegate: true` definition keeps `mx_pi_agent` active across a
+ *   main-session switch; it is a main-session verb, never a child grant
  *
  * This file owns no computation: it wires events, the tool, the command and the
  * flags, and delegates every decision to `src/`.
@@ -475,6 +477,7 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 		if (baseline !== undefined) {
 			const restore = planReset(baseline, {
 				availableTools: mainToolNames(),
+				currentTools: pi.getActiveTools(),
 				isModelAvailable: (label) => modelAvailable(ctx, label),
 			});
 			try {
@@ -928,6 +931,7 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 				}
 				const planned = planSwitch(agent, {
 					availableTools: mainToolNames(),
+					currentTools: pi.getActiveTools(),
 					isModelAvailable: (label) => modelAvailable(ctx, label),
 				});
 				if (!planned.ok) {

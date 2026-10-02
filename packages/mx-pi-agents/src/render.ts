@@ -119,6 +119,8 @@ export interface RosterLine {
 	trusted: boolean;
 	hash: string;
 	description: string;
+	/** True when the definition declares main-session delegation. */
+	delegate: boolean;
 }
 
 export function renderRosterLines(entries: readonly RosterLine[], theme: RenderTheme): string[] {
@@ -126,8 +128,9 @@ export function renderRosterLines(entries: readonly RosterLine[], theme: RenderT
 	const lines: string[] = [];
 	for (const entry of entries) {
 		const trust = entry.trusted ? theme.fg("success", "trusted") : theme.fg("warning", "gated");
+		const delegate = entry.delegate ? ` ${theme.fg("dim", "⇄ delegate")}` : "";
 		lines.push(
-			`${theme.fg("accent", sanitizeUiText(entry.name, 64))} ${theme.fg("dim", `[${sanitizeUiText(entry.kind, 16)}] [${entry.source} ${entry.hash}]`)} ${trust}`,
+			`${theme.fg("accent", sanitizeUiText(entry.name, 64))} ${theme.fg("dim", `[${sanitizeUiText(entry.kind, 16)}] [${entry.source} ${entry.hash}]`)} ${trust}${delegate}`,
 		);
 		lines.push(`  ${theme.fg("dim", sanitizeUiText(entry.description, 120))}`);
 	}

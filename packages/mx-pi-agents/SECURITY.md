@@ -25,8 +25,11 @@ and transcripts.
    transcripts, cross-session delivery, recursion.
 
 **Non-goals.** The pi host platform; provider/LLM trust; OS-level isolation of
-the whole pi process. Those are what containers and micro-VMs are for, per pi's
-own security documentation.
+the whole pi process; **recursive delegation**. A child is always a leaf: it
+cannot delegate, by design, and the `delegate` frontmatter flag does not change
+that. Those first three are what containers and micro-VMs are for, per pi's own
+security documentation; bounded recursion would be a separate design with its
+own depth, scope and budget controls.
 
 | # | Boundary | Attacker control | Control that holds |
 | --- | --- | --- | --- |
@@ -78,7 +81,9 @@ Additional fail-closed rules:
 - An explicit tool name that does not resolve in the child **refuses the run**.
 - An inherited name that does not resolve is dropped with a diagnostic.
 - A grant of any spawn-capable name (`mx_pi_agent`, `subagent`,
-  `spawn_subagent`, `subagent_task`, `Task`) **refuses the run**.
+  `spawn_subagent`, `subagent_task`, `Task`) **refuses the run**. The
+  main-session `delegate` flag never reaches this path, so it can never place a
+  spawn-capable name in a child grant.
 - An unknown frontmatter field **drops the whole definition**.
 - Any parse error drops the definition. There is no branch that yields
   "unrestricted" as a fallback.
@@ -159,7 +164,7 @@ is **refused**, never silently unsandboxed.
 - Gated approvals store the exact approved hash. Any edit invalidates the
   approval and requires re-approval.
 
-### B6 — main-session switches are pinned and fail-closed (invariants 12–17)
+### B6 — main-session switches are pinned and fail-closed (invariants 12–18)
 
 A `persona`/`main` definition can mutate the **main** session's system prompt,
 active tools, model and thinking level. The same pinning guarantees apply:
@@ -186,6 +191,12 @@ active tools, model and thinking level. The same pinning guarantees apply:
 - **17 — no child capability change.** A switch mutates main-session runtime
   state only. Child grants continue to come from the unmodified `planRun`
   contract; a switch can never widen a child's tool set.
+- **18 — `delegate` is a main-session verb.** A `delegate: true` definition
+  keeps `mx_pi_agent` in the active main-session tool set, so an orchestrator
+  persona can call specialists in sequence. It is read only by `planSwitch`,
+  which runs only for `kind: persona | main` in the main session. No code path
+  lets `delegate` place `mx_pi_agent` in a child grant; a child started from a
+  delegating orchestrator has no spawn-capable tool (invariant 8 stands).
 
 Switches are interactive-only. They are persisted as a non-context custom entry
 and rehydrated when a session is resumed; rehydration re-derives the prompt and

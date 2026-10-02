@@ -147,14 +147,47 @@ describe("renderRosterLines", () => {
 					trusted: true,
 					hash: "abc123",
 					description: "reads things",
+					delegate: false,
 				},
-				{ name: "local", kind: "sub", source: "project", trusted: false, hash: "def456", description: "gated" },
+				{
+					name: "local",
+					kind: "sub",
+					source: "project",
+					trusted: false,
+					hash: "def456",
+					description: "gated",
+					delegate: false,
+				},
 			],
 			theme,
 		).join("\n");
 		expect(lines).toContain("trusted");
 		expect(lines).toContain("gated");
 		expect(lines).toContain("abc123");
+	});
+
+	it("shows the delegate marker only when set", () => {
+		const withDelegate = renderRosterLines(
+			[{ name: "o", kind: "main", source: "bundled", trusted: true, hash: "h", description: "d", delegate: true }],
+			theme,
+		).join("\n");
+		expect(withDelegate).toContain("⇄ delegate");
+
+		const without = renderRosterLines(
+			[
+				{
+					name: "o",
+					kind: "main",
+					source: "bundled",
+					trusted: true,
+					hash: "h",
+					description: "d",
+					delegate: false,
+				},
+			],
+			theme,
+		).join("\n");
+		expect(without).not.toContain("delegate");
 	});
 
 	it("strips control characters from roster text", () => {
@@ -167,6 +200,7 @@ describe("renderRosterLines", () => {
 					trusted: false,
 					hash: "h",
 					description: "d\u001b[31m",
+					delegate: false,
 				},
 			],
 			theme,
@@ -350,8 +384,24 @@ describe("render: boundary hardening", () => {
 		expect(renderRosterLines([], theme)).toEqual(["No agents found."]);
 		const joined = renderRosterLines(
 			[
-				{ name: "a", kind: "persona", source: "global", trusted: true, hash: "abc", description: "d" },
-				{ name: "b", kind: "sub", source: "project", trusted: false, hash: "def", description: "e" },
+				{
+					name: "a",
+					kind: "persona",
+					source: "global",
+					trusted: true,
+					hash: "abc",
+					description: "d",
+					delegate: false,
+				},
+				{
+					name: "b",
+					kind: "sub",
+					source: "project",
+					trusted: false,
+					hash: "def",
+					description: "e",
+					delegate: false,
+				},
 			],
 			theme,
 		).join("\n");
@@ -401,7 +451,17 @@ describe("render: survivor kills", () => {
 
 	it("includes source and hash in a roster line", () => {
 		const lines = renderRosterLines(
-			[{ name: "a", kind: "main", source: "bundled", trusted: true, hash: "abc123", description: "d" }],
+			[
+				{
+					name: "a",
+					kind: "main",
+					source: "bundled",
+					trusted: true,
+					hash: "abc123",
+					description: "d",
+					delegate: false,
+				},
+			],
 			theme,
 		);
 		expect(lines[0]).toContain("bundled");

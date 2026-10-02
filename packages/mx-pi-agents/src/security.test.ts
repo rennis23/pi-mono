@@ -613,7 +613,11 @@ describe("invariant 11: a run cannot touch a path outside its granted scope", ()
 describe("invariant 12: a main-prompt override comes only from a pinned, re-hashed definition", () => {
 	it("plans the switch prompt from the pinned body, not the file", () => {
 		const agent = makeAgent({ name: "p", agentKind: "persona", body: "PINNED_BODY" });
-		const outcome = planSwitch(agent, { availableTools: ["read"], isModelAvailable: () => true });
+		const outcome = planSwitch(agent, {
+			availableTools: ["read"],
+			currentTools: ["read"],
+			isModelAvailable: () => true,
+		});
 		expect(outcome.ok).toBe(true);
 		if (!outcome.ok) return;
 		expect(outcome.plan.prompt.body).toBe("PINNED_BODY");
@@ -634,7 +638,7 @@ describe("invariant 13: #none restores the exact baseline or reports what it cou
 	it("restores the baseline and warns about values that no longer resolve", () => {
 		const plan = planReset(
 			{ tools: ["read", "gone"], model: "openai/gpt-none", thinking: "low" },
-			{ availableTools: ["read", "bash"], isModelAvailable: () => false },
+			{ availableTools: ["read", "bash"], currentTools: ["read", "bash"], isModelAvailable: () => false },
 		);
 		expect(plan.tools).toEqual(["read"]);
 		expect(plan.model).toBeUndefined();
@@ -682,6 +686,7 @@ describe("invariant 16: switch-derived UI text is control-character stripped", (
 					trusted: true,
 					hash: "h",
 					description: "d\u001b[31m",
+					delegate: false,
 				},
 			],
 			{ fg: (_color, text) => text },
@@ -705,6 +710,27 @@ describe("invariant 17: a main-session switch never alters a child plan", () => 
 		// The switch module only decides main-session runtime state; child grants
 		// still come from the policy module's total contract.
 		expect(dispatchDirective({ name: "m", kind: "main", hasTask: true })).toEqual({ action: "switch", kind: "main" });
+	});
+});
+
+describe("invariant 18: delegate is a main-session verb", () => {
+	it("never places mx_pi_agent in a child grant", () => {
+		// A main-kind definition with delegate: true still runs as a leaf child:
+		// the flag is read only by planSwitch (main session), never by policy.
+		const agent = makeAgent({ name: "o", agentKind: "main", tools: ["read"], delegate: true });
+		const outcome = planRun(agent, "task", makeSessionContext({ availableTools: ["read", "mx_pi_agent"] }));
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(outcome.plan.tools).toEqual(["read"]);
+		expect(outcome.plan.tools).not.toContain("mx_pi_agent");
+	});
+
+	it("still refuses an explicit spawn grant even with delegate", () => {
+		const agent = makeAgent({ name: "o", agentKind: "main", tools: ["read", "mx_pi_agent"], delegate: true });
+		const outcome = planRun(agent, "task", makeSessionContext({ availableTools: ["read", "mx_pi_agent"] }));
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.refusal.reason).toBe("spawn-tool-grant");
 	});
 });
 

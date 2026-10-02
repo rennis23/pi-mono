@@ -122,6 +122,15 @@ Every definition has a `kind` in frontmatter. It is optional and defaults to
 | `main` | switches the main session, **appending** to the system prompt | allowed | body appends as an addendum |
 | `sub` | not switchable; `#name <task>` delegates | allowed | body is the child prompt (runtime header + body) |
 
+A `persona`/`main` definition can set `delegate: true` to keep the
+`mx_pi_agent` tool active after the switch, so an orchestrator can call
+specialists in sequence. The flag unions `mx_pi_agent` into the preset (the
+declared `tools`, or the current active set when `tools` is absent); if the tool
+does not resolve in the main session the whole switch is refused. `delegate` is
+a **main-session verb only**: child runs ignore it, and a child started from a
+delegating orchestrator still has no spawn-capable tool (a child can never
+delegate).
+
 A switch also applies the definition's `tools`, `model` and `thinking` as a
 preset and restores the pre-switch values on `#none`. While it is active,
 `skills` and `context_files` narrow what the resource loader puts into the
@@ -213,6 +222,13 @@ this bus, so it publishes nothing.
 | `reviewer` | read, grep, find, ls | Defect-focused code review, severity-ranked |
 | `builder` | read, grep, find, ls, edit, write, bash | Scoped implementation with tests and self-verification |
 | `socrates` | none (persona) | Socratic questioning of a problem with a chosen number of questions; proposes no answers |
+| `productbuilder` | read, grep, find, ls + delegation | Orchestrates explorer → planner → builder → reviewer through a task and reports a commit message and PR description |
+
+`productbuilder` is a `main`-kind orchestrator with `delegate: true`: switching
+to it with `#productbuilder <task>` keeps `mx_pi_agent` active while narrowing
+the other tools to read-only, so it can direct specialists but cannot modify the
+tree itself. It only emits the commit message, PR title and PR description; it
+does not open the PR.
 
 `builder` is the only bundled agent with write access and a shell; its `bash`
 runs under `sandbox: os`, and every bundled file tool is path-confined to the
@@ -250,6 +266,7 @@ You are a review agent. Report findings as a list, most severe first.
 | `description` | yes | ≤ 512 chars | Shown in the roster |
 | `kind` | no | `main` (default), `persona`, `sub` | What a bare `#name` does. See [agent kinds](#agent-kinds) |
 | `tools` | no | list of tool names | **Absent ≠ empty.** `[]` means no tools |
+| `delegate` | no | `false` (default), `true` | Main-session only: keep `mx_pi_agent` active across a `persona`/`main` switch. Ignored with a warning on `sub` |
 | `skills` | no | list of skill names | Main-session (`persona`/`main`) skill allow-list. Absent = all loaded skills; `[]` = none; unknown names match nothing |
 | `context_files` | no | list of paths | Main-session project-context allow-list. An entry matches the absolute path, the cwd-relative path or the basename. Absent = all loaded files; `[]` = none |
 | `tools_inheritance` | no | `none` (default), `parent` | Ignored when `tools` is present |

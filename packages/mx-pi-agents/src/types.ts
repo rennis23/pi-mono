@@ -70,6 +70,12 @@ export interface AgentDefinition {
 	 * cwd-relative path or basename. Same absent/empty semantics as `skills`.
 	 */
 	contextFiles: string[] | undefined;
+	/**
+	 * Main-session delegation. When `true`, a main-session switch guarantees
+	 * `mx_pi_agent` is in the active tool set. Ignored for child runs, which
+	 * never receive a spawn-capable grant (invariant 8).
+	 */
+	delegate: boolean;
 	model: string | undefined;
 	thinking: ThinkingLevel | undefined;
 	maxTurns: number | undefined;

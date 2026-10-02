@@ -907,6 +907,22 @@ describe("# main-session switching", () => {
 		expect(harness.messages).toHaveLength(1);
 	});
 
+	it("applies a delegating orchestrator switch and keeps mx_pi_agent active", async () => {
+		harness = createHarness({
+			cwd,
+			activeTools: ["read", "grep", "bash"],
+			allTools: ["read", "grep", "find", "ls", "mx_pi_agent"],
+		});
+		mxPiAgents(harness.pi);
+		await start();
+
+		const result = await emitInput({ text: "#productbuilder ship it" });
+
+		expect(result).toEqual({ action: "transform", text: "ship it" });
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents-persona", "main:productbuilder");
+		expect(harness.activeTools()).toEqual(["read", "grep", "find", "ls", "mx_pi_agent"]);
+	});
+
 	it("refuses a persona as a child through the tool and a pipeline", async () => {
 		writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
 		await start();

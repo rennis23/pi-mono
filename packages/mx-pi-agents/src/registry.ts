@@ -148,6 +148,13 @@ export function discoverAgents(dirs: RegistryDirs, now: () => number): Discovery
 				continue;
 			}
 			const name = parsed.definition.name;
+			if (parsed.definition.kind === "sub" && parsed.definition.delegate) {
+				diagnostics.push({
+					level: "warning",
+					message: `delegate is ignored on sub agent "${name}": sub agents never run in the main session`,
+					path,
+				});
+			}
 			const existing = byName.get(name);
 
 			if (existing) {
@@ -270,6 +277,8 @@ export interface RosterEntry {
 	isolation: string;
 	sandbox: string;
 	model: string | undefined;
+	/** True when the definition declares main-session delegation. */
+	delegate: boolean;
 }
 
 export function rosterEntries(agents: readonly PinnedAgent[]): RosterEntry[] {
@@ -285,6 +294,7 @@ export function rosterEntries(agents: readonly PinnedAgent[]): RosterEntry[] {
 		isolation: agent.definition.isolation,
 		sandbox: agent.definition.sandbox,
 		model: agent.definition.model ? sanitizeUiText(agent.definition.model, 80) : undefined,
+		delegate: agent.definition.delegate,
 	}));
 }
 

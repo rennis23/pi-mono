@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Main-session delegation: a `delegate: true` frontmatter field on a
+  `persona`/`main` definition keeps the `mx_pi_agent` tool active across a
+  main-session switch. The flag unions `mx_pi_agent` into the applied tool
+  preset (the declared `tools`, or the current active set when `tools` is
+  absent) and refuses the switch if the tool does not resolve. It is a
+  main-session verb only: child runs ignore it, so a child can never delegate.
+  `/mx-pi-agents list` marks delegating definitions with a `⇄ delegate` token.
+- Bundled `productbuilder` orchestrator: a `main`-kind agent with
+  `delegate: true` and read-only tools that runs the
+  explorer → planner → builder → reviewer pipeline and ends with a commit
+  message plus a PR title and description (it does not open the PR).
 - Main-session resource allow-lists: `skills` and `context_files` frontmatter
   fields on a `persona`/`main` definition narrow the prompt sections pi's
   resource loader renders (skills and project context) while the switch is

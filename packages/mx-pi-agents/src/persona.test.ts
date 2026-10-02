@@ -16,7 +16,8 @@ import {
 import type { AgentKind, SwitchBaseline, SwitchEntryData, ThinkingLevel } from "./types.js";
 
 const context: SwitchContext = {
-	availableTools: ["read", "grep", "bash", "edit", "write"],
+	availableTools: ["read", "grep", "bash", "edit", "write", "mx_pi_agent"],
+	currentTools: ["read", "grep", "bash", "edit", "write"],
 	isModelAvailable: (model) => model === "anthropic/claude-sonnet-4-5",
 };
 
@@ -102,6 +103,67 @@ describe("planSwitch", () => {
 	it("refuses a definition that is not persona or main", () => {
 		const outcome = planSwitch(makeAgent({ name: "s", agentKind: "sub" }), context);
 		expect(outcome.ok).toBe(false);
+	});
+});
+
+describe("planSwitch: delegate", () => {
+	it("unions mx_pi_agent into a declared tool preset", () => {
+		const outcome = planSwitch(makeAgent({ name: "o", agentKind: "main", tools: ["read"], delegate: true }), context);
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(outcome.plan.applied.tools).toEqual(["read", "mx_pi_agent"]);
+	});
+
+	it("yields only mx_pi_agent for an empty declared preset", () => {
+		const outcome = planSwitch(makeAgent({ name: "o", agentKind: "main", tools: [], delegate: true }), context);
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(outcome.plan.applied.tools).toEqual(["mx_pi_agent"]);
+	});
+
+	it("unions the current active set when tools is absent", () => {
+		const outcome = planSwitch(makeAgent({ name: "o", agentKind: "main", delegate: true }), context);
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(outcome.plan.applied.tools).toEqual(["read", "grep", "bash", "edit", "write", "mx_pi_agent"]);
+	});
+
+	it("restores delegation when switching from a narrowed agent", () => {
+		// After #planner the active set is read-only; the orchestrator declares no
+		// preset, so the union must bring mx_pi_agent back.
+		const narrowed: SwitchContext = {
+			availableTools: ["read", "grep", "find", "ls", "mx_pi_agent"],
+			currentTools: ["read", "grep", "find", "ls"],
+			isModelAvailable: () => true,
+		};
+		const outcome = planSwitch(makeAgent({ name: "productbuilder", agentKind: "main", delegate: true }), narrowed);
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(outcome.plan.applied.tools).toEqual(["read", "grep", "find", "ls", "mx_pi_agent"]);
+	});
+
+	it("refuses the whole switch when the delegate tool does not resolve", () => {
+		const noSpawn: SwitchContext = {
+			availableTools: ["read"],
+			currentTools: ["read"],
+			isModelAvailable: () => true,
+		};
+		const outcome = planSwitch(makeAgent({ name: "o", agentKind: "main", tools: ["read"], delegate: true }), noSpawn);
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.refusal).toContain("do not resolve in the main session");
+		expect(outcome.refusal).toContain("mx_pi_agent");
+	});
+
+	it("is byte-identical to today when delegate is false or absent", () => {
+		const absent = planSwitch(makeAgent({ name: "p", agentKind: "persona", tools: ["read"] }), context);
+		const explicitFalse = planSwitch(
+			makeAgent({ name: "p", agentKind: "persona", tools: ["read"], delegate: false }),
+			context,
+		);
+		expect(absent).toEqual(explicitFalse);
+		if (!absent.ok) return;
+		expect(absent.plan.applied.tools).toEqual(["read"]);
 	});
 });
 

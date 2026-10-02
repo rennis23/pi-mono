@@ -31,6 +31,7 @@ function makeAgent(kind: SourceKind, name = "reviewer", hash = HASH): PinnedAgen
 		timeoutMs: undefined,
 		tokenBudget: undefined,
 		costBudget: undefined,
+		delegate: false,
 		isolation: "process",
 		sandbox: "none",
 		body: "body",

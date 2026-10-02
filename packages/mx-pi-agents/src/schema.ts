@@ -87,6 +87,17 @@ function readInt(
 	return value;
 }
 
+/** Read a boolean field; absent/undefined/null means `false`; wrong type fails. */
+function readBool(data: Record<string, unknown>, key: string, errors: string[]): boolean {
+	const value = data[key];
+	if (value === undefined || value === null) return false;
+	if (typeof value !== "boolean") {
+		errors.push(`${key} must be a boolean`);
+		return false;
+	}
+	return value;
+}
+
 /** Read a finite number field with bounds (cost budgets can be fractional). */
 function readNumber(
 	data: Record<string, unknown>,
@@ -193,6 +204,7 @@ const KNOWN_FIELDS = new Set([
 	"cost_budget",
 	"isolation",
 	"sandbox",
+	"delegate",
 ]);
 
 /**
@@ -267,6 +279,7 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 	const timeoutMs = readInt(data, "timeout_ms", 1_000, MAX_TIMEOUT_MS, errors);
 	const tokenBudget = readInt(data, "token_budget", 1_000, MAX_TOKEN_BUDGET, errors);
 	const costBudget = readNumber(data, "cost_budget", 0, MAX_COST_BUDGET, errors);
+	const delegate = readBool(data, "delegate", errors);
 
 	let isolation: AgentDefinition["isolation"] = "process";
 	if (data.isolation !== undefined && data.isolation !== null) {
@@ -305,6 +318,7 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 			timeoutMs,
 			tokenBudget,
 			costBudget,
+			delegate,
 			isolation,
 			sandbox,
 			body: "",

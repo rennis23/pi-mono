@@ -23,7 +23,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverAgents } from "./registry.js";
 
 /** The roster every release of this package is expected to ship. */
-const EXPECTED_BUNDLED_AGENTS = ["explorer", "planner", "reviewer", "builder", "socrates"];
+const EXPECTED_BUNDLED_AGENTS = ["explorer", "planner", "reviewer", "builder", "socrates", "productbuilder"];
 
 let root: string;
 let agentDir: string;
@@ -61,6 +61,16 @@ describe("bundled agent artifacts", () => {
 		for (const agent of agents) {
 			expect(agent.definition.tools ?? []).not.toContain("mx_pi_agent");
 		}
+	});
+
+	it("ships productbuilder as a delegating main-kind orchestrator with read-only tools", () => {
+		const { agents } = bundledAgents();
+		const pb = agents.find((agent) => agent.definition.name === "productbuilder");
+		expect(pb?.definition.kind).toBe("main");
+		expect(pb?.definition.delegate).toBe(true);
+		expect(pb?.definition.tools).toEqual(["read", "grep", "find", "ls"]);
+		// Delegation is declared via the flag, never by granting the spawn tool.
+		expect(pb?.definition.tools ?? []).not.toContain("mx_pi_agent");
 	});
 
 	it("ships socrates as a persona with no tools, skills or context files", () => {

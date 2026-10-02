@@ -46,6 +46,7 @@ export interface MakeAgentOptions {
 	costBudget?: number;
 	isolation?: AgentDefinition["isolation"];
 	sandbox?: AgentDefinition["sandbox"];
+	delegate?: boolean;
 	body?: string;
 	/** Provenance of the definition; not the agent kind. */
 	sourceKind?: SourceKind;
@@ -71,6 +72,7 @@ function frontmatterFor(options: MakeAgentOptions, name: string): string {
 	if (options.costBudget !== undefined) lines.push(`cost_budget: ${options.costBudget}`);
 	if (options.isolation !== undefined) lines.push(`isolation: ${options.isolation}`);
 	if (options.sandbox !== undefined) lines.push(`sandbox: ${options.sandbox}`);
+	if (options.delegate !== undefined) lines.push(`delegate: ${options.delegate}`);
 	if (options.extraFrontmatter !== undefined) lines.push(options.extraFrontmatter);
 	return lines.join("\n");
 }
@@ -107,6 +109,7 @@ export function makeAgent(options: MakeAgentOptions = {}): PinnedAgent {
 		costBudget: options.costBudget,
 		isolation: options.isolation ?? "process",
 		sandbox: options.sandbox ?? "none",
+		delegate: options.delegate ?? false,
 		body,
 	};
 

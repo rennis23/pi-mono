@@ -124,6 +124,22 @@ describe("discoverAgents", () => {
 		expect(diagnostics.some((d) => d.level === "warning" && d.message.includes("dropped definition"))).toBe(true);
 	});
 
+	it("keeps a sub agent with delegate set and warns that it is ignored", () => {
+		writeFileSync(
+			join(agentDir, "agents", "s.md"),
+			"---\nname: s\ndescription: s description\nkind: sub\ndelegate: true\n---\n\nbody\n",
+		);
+		const { agents, diagnostics } = discoverAgents(dirs(), () => 1);
+		expect(findAgent(agents, "s")?.definition.delegate).toBe(true);
+		expect(
+			diagnostics.some(
+				(d) =>
+					d.level === "warning" &&
+					d.message === 'delegate is ignored on sub agent "s": sub agents never run in the main session',
+			),
+		).toBe(true);
+	});
+
 	it("ignores non-markdown files and dotfiles", () => {
 		writeFileSync(join(agentDir, "agents", "notes.txt"), "not a definition");
 		writeFileSync(join(agentDir, "agents", ".hidden.md"), "---\nname: h\ndescription: d\n---\nbody");

@@ -35,6 +35,7 @@ function makeAgent(overrides: Partial<AgentDefinition> = {}, kind: SourceKind = 
 		timeoutMs: undefined,
 		tokenBudget: undefined,
 		costBudget: undefined,
+		delegate: false,
 		isolation: "process",
 		sandbox: "none",
 		body: "You review code.",

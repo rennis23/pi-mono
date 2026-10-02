@@ -446,6 +446,15 @@ describe("schema: boundary hardening", () => {
 		expect(rawOk({ ...base, sandbox: "os" }).sandbox).toBe("os");
 	});
 
+	it("parses delegate, defaulting to false and rejecting non-booleans", () => {
+		expect(rawOk({ ...base }).delegate).toBe(false);
+		expect(rawOk({ ...base, delegate: true }).delegate).toBe(true);
+		expect(rawOk({ ...base, delegate: false }).delegate).toBe(false);
+		rawErr({ ...base, delegate: "true" }, "delegate must be a boolean");
+		rawErr({ ...base, delegate: 1 }, "delegate must be a boolean");
+		rawErr({ ...base, delegate: [] }, "delegate must be a boolean");
+	});
+
 	it("bounds integer and fractional numeric fields", () => {
 		rawErr({ ...base, max_turns: 0 }, "max_turns must be between");
 		rawErr({ ...base, max_turns: MAX_MAX_TURNS + 1 }, "max_turns must be between");
