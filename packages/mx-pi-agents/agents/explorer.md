@@ -1,7 +1,7 @@
 ---
 name: explorer
 description: Read-only reconnaissance of a codebase, answering one question with file and line evidence
-tools: [read, grep, find, ls, mx_pi_agent]
+tools: [read, grep, find, ls]
 max_turns: 20
 timeout_ms: 300000
 token_budget: 150000

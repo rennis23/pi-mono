@@ -153,33 +153,6 @@ describe("discoverAgents", () => {
 		expect(agents[0].source.directory).toBe(realDirectoryOf(path));
 	});
 
-	it("discovers the shipped bundled agents by default", () => {
-		// No bundledDir override: this exercises the real package layout, so a
-		// broken `agents/**` glob or a moved directory fails the build.
-		const { agents, diagnostics } = discoverAgents({ agentDir, cwd, agentPaths: [] }, () => 1);
-		const names = agents.map((agent) => agent.definition.name);
-		for (const expected of ["explorer", "planner", "reviewer", "builder", "socrates"]) {
-			expect(names).toContain(expected);
-		}
-		expect(diagnostics.filter((d) => d.level === "warning")).toEqual([]);
-	});
-
-	it("never grants a spawn-capable tool to a bundled agent", () => {
-		const { agents } = discoverAgents({ agentDir, cwd, agentPaths: [] }, () => 1);
-		for (const agent of agents) {
-			expect(agent.definition.tools ?? []).not.toContain("mx_pi_agent");
-		}
-	});
-
-	it("bundled socrates declares no tools, skills or context files", () => {
-		const { agents } = discoverAgents({ agentDir, cwd, agentPaths: [] }, () => 1);
-		const socrates = agents.find((agent) => agent.definition.name === "socrates");
-		expect(socrates?.definition.kind).toBe("persona");
-		expect(socrates?.definition.tools).toEqual([]);
-		expect(socrates?.definition.skills).toEqual([]);
-		expect(socrates?.definition.contextFiles).toEqual([]);
-	});
-
 	it("sorts the roster by name", () => {
 		writeDefinition(join(agentDir, "agents"), "z.md", "zeta");
 		writeDefinition(join(agentDir, "agents"), "a.md", "alpha");

@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Turn a goal into an ordered implementation plan with file-level steps and risks
-tools: [read, grep, find, ls, mx_pi_agent]
+tools: [read, grep, find, ls]
 max_turns: 25
 timeout_ms: 420000
 token_budget: 200000

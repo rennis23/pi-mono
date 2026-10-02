@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Read-only review of a diff or file for correctness, security and maintainability issues
-tools: [read, grep, find, ls, mx_pi_agent]
+tools: [read, grep, find, ls]
 thinking: medium
 max_turns: 20
 timeout_ms: 300000

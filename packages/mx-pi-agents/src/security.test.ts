@@ -392,13 +392,9 @@ describe("invariant 7: child output is capped data that cannot trigger a parent 
 });
 
 describe("invariant 8: children cannot spawn children", () => {
-	it("has no mx_pi_agent in any bundled grant", () => {
-		const { agents } = discoverAgents({ agentDir, cwd: targetRepo, agentPaths: [] }, () => 1);
-		for (const agent of agents) {
-			expect(agent.definition.tools ?? []).not.toContain("mx_pi_agent");
-		}
-	});
-
+	// The shipped-content half of this invariant ("no bundled agent declares a
+	// spawn-capable tool") reads the real `agents/*.md` files and lives in
+	// `bundled-agents.test.ts`. Everything below is fixture-based logic.
 	it("excludes spawn-capable names from inheritance", () => {
 		const grants = computeEffectiveTools(
 			{ tools: undefined, toolsInheritance: "parent" },
