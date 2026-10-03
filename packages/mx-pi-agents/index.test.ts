@@ -488,6 +488,15 @@ describe("# directive input handler", () => {
 		expect(harness.messages).toHaveLength(0);
 	});
 
+	it("no longer resolves the renamed productbuilder agent", async () => {
+		await start();
+		const result = await emitInput({ text: "#productbuilder ship it" });
+
+		expect(result).toEqual({ action: "handled" });
+		expect(harness.notificationText()).toContain('unknown agent "#productbuilder"');
+		expect(harness.messages).toHaveLength(0);
+	});
+
 	it("continues when the extension is disabled", async () => {
 		await start();
 		harness.flagValues.set("mx-pi-agents-disable", true);
@@ -916,10 +925,10 @@ describe("# main-session switching", () => {
 		mxPiAgents(harness.pi);
 		await start();
 
-		const result = await emitInput({ text: "#productbuilder ship it" });
+		const result = await emitInput({ text: "#product-builder ship it" });
 
 		expect(result).toEqual({ action: "transform", text: "ship it" });
-		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents-persona", "main:productbuilder");
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents-persona", "main:product-builder");
 		expect(harness.activeTools()).toEqual(["read", "grep", "find", "ls", "mx_pi_agent"]);
 	});
 

@@ -55,8 +55,8 @@ function dirs(overrides: Partial<RegistryDirs> = {}): RegistryDirs {
 
 describe("discoverAgents", () => {
 	it("finds global and project definitions with the right source kinds", () => {
-		writeDefinition(join(agentDir, "agents"), "g.md", "global-agent");
-		writeDefinition(join(cwd, ".pi", "agents"), "p.md", "project-agent");
+		writeDefinition(join(agentDir, "agents"), "global-agent.md", "global-agent");
+		writeDefinition(join(cwd, ".pi", "agents"), "project-agent.md", "project-agent");
 
 		const { agents } = discoverAgents(dirs(), () => 1000);
 		const global = findAgent(agents, "global-agent");
@@ -73,8 +73,8 @@ describe("discoverAgents", () => {
 		const second = join(root, "two");
 		mkdirSync(first, { recursive: true });
 		mkdirSync(second, { recursive: true });
-		writeDefinition(first, "a.md", "first-agent");
-		writeDefinition(second, "b.md", "second-agent");
+		writeDefinition(first, "first-agent.md", "first-agent");
+		writeDefinition(second, "second-agent.md", "second-agent");
 
 		const { agents } = discoverAgents(dirs({ agentPaths: [first, second] }), () => 1);
 		expect(findAgent(agents, "first-agent")?.source.kind).toBe("config");
@@ -82,8 +82,8 @@ describe("discoverAgents", () => {
 	});
 
 	it("drops a gated definition that shadows a trusted one", () => {
-		writeDefinition(join(agentDir, "agents"), "trusted.md", "reviewer");
-		const shadowPath = writeDefinition(join(cwd, ".pi", "agents"), "shadow.md", "reviewer");
+		writeDefinition(join(agentDir, "agents"), "reviewer.md", "reviewer");
+		const shadowPath = writeDefinition(join(cwd, ".pi", "agents"), "reviewer.md", "reviewer");
 
 		const { agents, shadowed, diagnostics } = discoverAgents(dirs(), () => 1);
 		expect(agents).toHaveLength(1);
@@ -96,8 +96,8 @@ describe("discoverAgents", () => {
 	it("keeps the trusted definition when a gated config definition shares its name", () => {
 		// Discovery order is bundled, global, config, project: the gated config
 		// entry arrives second and is dropped as a shadow rather than overriding.
-		writeDefinition(join(configDir), "c.md", "reviewer");
-		writeDefinition(join(agentDir, "agents"), "g.md", "reviewer");
+		writeDefinition(join(configDir), "reviewer.md", "reviewer");
+		writeDefinition(join(agentDir, "agents"), "reviewer.md", "reviewer");
 
 		const { agents, shadowed, diagnostics } = discoverAgents(dirs({ agentPaths: [configDir] }), () => 1);
 		expect(agents).toHaveLength(1);
@@ -107,12 +107,12 @@ describe("discoverAgents", () => {
 	});
 
 	it("keeps the first of two definitions in the same trust class", () => {
-		writeDefinition(join(cwd, ".pi", "agents"), "a.md", "dup");
-		writeDefinition(join(configDir), "b.md", "dup");
+		writeDefinition(join(cwd, ".pi", "agents"), "dup.md", "dup");
+		writeDefinition(join(configDir), "dup.md", "dup");
 
 		const { agents } = discoverAgents(dirs({ agentPaths: [configDir] }), () => 1);
 		expect(agents).toHaveLength(1);
-		expect(agents[0].source.path).toBe(join(configDir, "b.md"));
+		expect(agents[0].source.path).toBe(join(configDir, "dup.md"));
 	});
 
 	it("drops unparseable definitions with a diagnostic", () => {
@@ -145,8 +145,33 @@ describe("discoverAgents", () => {
 		writeFileSync(join(agentDir, "agents", ".hidden.md"), "---\nname: h\ndescription: d\n---\nbody");
 		writeDefinition(join(agentDir, "agents"), "real.md", "real");
 
-		const { agents } = discoverAgents(dirs(), () => 1);
+		const { agents, diagnostics } = discoverAgents(dirs(), () => 1);
 		expect(agents.map((a) => a.definition.name)).toEqual(["real"]);
+		expect(diagnostics.some((d) => d.message.includes("must be named"))).toBe(false);
+	});
+
+	it("drops a definition whose file name does not match its name", () => {
+		writeDefinition(join(agentDir, "agents"), "alpha.md", "beta");
+
+		const { agents, diagnostics } = discoverAgents(dirs(), () => 1);
+		expect(agents).toEqual([]);
+		expect(diagnostics.some((d) => d.level === "warning" && d.message.includes("beta.md"))).toBe(true);
+	});
+
+	it("compares the file stem case-sensitively", () => {
+		writeDefinition(join(agentDir, "agents"), "ALPHA.md", "alpha");
+
+		const { agents, diagnostics } = discoverAgents(dirs(), () => 1);
+		expect(agents).toEqual([]);
+		expect(diagnostics.some((d) => d.level === "warning" && d.message.includes("alpha.md"))).toBe(true);
+	});
+
+	it("treats a dot in the file stem as a mismatch", () => {
+		writeDefinition(join(agentDir, "agents"), "a.b.md", "ab");
+
+		const { agents, diagnostics } = discoverAgents(dirs(), () => 1);
+		expect(agents).toEqual([]);
+		expect(diagnostics.some((d) => d.level === "warning" && d.message.includes("ab.md"))).toBe(true);
 	});
 
 	it("returns an empty roster for missing directories", () => {
@@ -170,8 +195,8 @@ describe("discoverAgents", () => {
 	});
 
 	it("sorts the roster by name", () => {
-		writeDefinition(join(agentDir, "agents"), "z.md", "zeta");
-		writeDefinition(join(agentDir, "agents"), "a.md", "alpha");
+		writeDefinition(join(agentDir, "agents"), "zeta.md", "zeta");
+		writeDefinition(join(agentDir, "agents"), "alpha.md", "alpha");
 		const { agents } = discoverAgents(dirs(), () => 1);
 		expect(agents.map((a) => a.definition.name)).toEqual(["alpha", "zeta"]);
 	});
@@ -179,7 +204,7 @@ describe("discoverAgents", () => {
 
 describe("pinRegistry", () => {
 	it("pins definitions with hashes and a timestamp", () => {
-		writeDefinition(join(agentDir, "agents"), "a.md", "alpha");
+		writeDefinition(join(agentDir, "agents"), "alpha.md", "alpha");
 		const { snapshot } = pinRegistry(dirs(), () => 4242);
 		expect(snapshot.pinnedAt).toBe(4242);
 		expect(snapshot.agents[0].hash).toMatch(/^[0-9a-f]{64}$/);
@@ -194,14 +219,14 @@ describe("pinRegistry", () => {
 
 describe("verifyPinned", () => {
 	it("accepts an unchanged definition", () => {
-		writeDefinition(join(agentDir, "agents"), "a.md", "alpha");
+		writeDefinition(join(agentDir, "agents"), "alpha.md", "alpha");
 		const { snapshot } = pinRegistry(dirs(), () => 1);
 		const result = verifyPinned(snapshot.agents[0]);
 		expect(result.ok).toBe(true);
 	});
 
 	it("refuses when the file changed after pinning", () => {
-		const path = writeDefinition(join(agentDir, "agents"), "a.md", "alpha");
+		const path = writeDefinition(join(agentDir, "agents"), "alpha.md", "alpha");
 		const { snapshot } = pinRegistry(dirs(), () => 1);
 		writeFileSync(path, "---\nname: alpha\ndescription: changed\ntools: [bash]\n---\n\nNew body.\n");
 
@@ -213,7 +238,7 @@ describe("verifyPinned", () => {
 	});
 
 	it("refuses when the file is gone", () => {
-		const path = writeDefinition(join(agentDir, "agents"), "a.md", "alpha");
+		const path = writeDefinition(join(agentDir, "agents"), "alpha.md", "alpha");
 		const { snapshot } = pinRegistry(dirs(), () => 1);
 		rmSync(path);
 
@@ -224,7 +249,7 @@ describe("verifyPinned", () => {
 	});
 
 	it("detects a capability widening even when the body is unchanged", () => {
-		const path = writeDefinition(join(agentDir, "agents"), "a.md", "alpha", "max_turns: 5\n");
+		const path = writeDefinition(join(agentDir, "agents"), "alpha.md", "alpha", "max_turns: 5\n");
 		const { snapshot } = pinRegistry(dirs(), () => 1);
 		writeFileSync(
 			path,
@@ -278,11 +303,11 @@ describe("registry: boundary hardening", () => {
 	it("ignores non-md, hidden and non-directory paths, and sorts files", () => {
 		const dir = join(root, "defs");
 		mkdirSync(dir, { recursive: true });
-		writeDefinition(dir, "b.md", "bee");
-		writeDefinition(dir, "a.md", "aye");
+		writeDefinition(dir, "bee.md", "bee");
+		writeDefinition(dir, "aye.md", "aye");
 		writeDefinition(dir, "notes.txt", "notes");
 		writeFileSync(join(dir, ".hidden.md"), "x");
-		writeDefinition(dir, "c.MD", "cee");
+		writeDefinition(dir, "cee.MD", "cee");
 		const { agents } = discoverAgents(dirs({ agentPaths: [dir] }), () => 1);
 		expect(agents.map((a) => a.definition.name)).toEqual(["aye", "bee", "cee"]);
 	});
@@ -295,11 +320,11 @@ describe("registry: boundary hardening", () => {
 	});
 
 	it("drops a duplicate in the same trust class and keeps the first", () => {
-		writeDefinition(join(agentDir, "agents"), "a.md", "dup");
-		writeDefinition(join(agentDir, "agents"), "b.md", "dup");
+		writeDefinition(emptyBundled, "dup.md", "dup");
+		writeDefinition(join(agentDir, "agents"), "dup.md", "dup");
 		const { agents, diagnostics } = discoverAgents(dirs(), () => 1);
 		expect(agents).toHaveLength(1);
-		expect(agents[0].source.path).toBe(join(agentDir, "agents", "a.md"));
+		expect(agents[0].source.path).toBe(join(emptyBundled, "dup.md"));
 		expect(diagnostics.some((d) => d.level === "info" && d.message.includes("duplicate"))).toBe(true);
 	});
 
@@ -325,7 +350,7 @@ describe("registry: boundary hardening", () => {
 	});
 
 	it("verifyPinned reports changed then missing", () => {
-		const path = writeDefinition(join(agentDir, "agents"), "v.md", "verifiable");
+		const path = writeDefinition(join(agentDir, "agents"), "verifiable.md", "verifiable");
 		const agent = findAgent(discoverAgents(dirs(), () => 1).agents, "verifiable")!;
 		expect(verifyPinned(agent).ok).toBe(true);
 		writeFileSync(path, "---\nname: verifiable\ndescription: changed\n---\n\nBody.\n");
@@ -337,7 +362,7 @@ describe("registry: boundary hardening", () => {
 	});
 
 	it("rosterEntries truncates the hash and omits absent tools/model", () => {
-		writeDefinition(join(agentDir, "agents"), "r.md", "roster");
+		writeDefinition(join(agentDir, "agents"), "roster.md", "roster");
 		const agent = findAgent(discoverAgents(dirs(), () => 1).agents, "roster")!;
 		const [entry] = rosterEntries([agent]);
 		expect(entry.name).toBe("roster");
@@ -355,9 +380,9 @@ describe("registry: survivor kills", () => {
 	it("returns full file paths for discovered definitions", () => {
 		const dir = join(root, "paths");
 		mkdirSync(dir, { recursive: true });
-		writeDefinition(dir, "a.md", "aye");
+		writeDefinition(dir, "aye.md", "aye");
 		const { agents } = discoverAgents(dirs({ agentPaths: [dir] }), () => 1);
-		expect(agents[0].source.path).toBe(join(dir, "a.md"));
+		expect(agents[0].source.path).toBe(join(dir, "aye.md"));
 	});
 
 	it("sorts agents by name across config dirs regardless of discovery order", () => {
@@ -365,8 +390,8 @@ describe("registry: survivor kills", () => {
 		const second = join(root, "second");
 		mkdirSync(first, { recursive: true });
 		mkdirSync(second, { recursive: true });
-		writeDefinition(first, "z.md", "zeta");
-		writeDefinition(second, "a.md", "alpha");
+		writeDefinition(first, "zeta.md", "zeta");
+		writeDefinition(second, "alpha.md", "alpha");
 		const { agents } = discoverAgents(dirs({ agentPaths: [first, second] }), () => 1);
 		expect(agents.map((a) => a.definition.name)).toEqual(["alpha", "zeta"]);
 	});
@@ -400,7 +425,7 @@ describe("registry: survivor kills", () => {
 	});
 
 	it("names the missing and changed pin messages", () => {
-		const path = writeDefinition(join(agentDir, "agents"), "v2.md", "verify2");
+		const path = writeDefinition(join(agentDir, "agents"), "verify2.md", "verify2");
 		const agent = findAgent(discoverAgents(dirs(), () => 1).agents, "verify2")!;
 		writeFileSync(path, "---\nname: verify2\ndescription: changed\n---\n\nBody.\n");
 		const changed = verifyPinned(agent);

@@ -8,7 +8,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseAgentDefinition } from "./schema.js";
 import { sanitizeUiText, sha256Hex } from "./security.js";
@@ -148,6 +148,18 @@ export function discoverAgents(dirs: RegistryDirs, now: () => number): Discovery
 				continue;
 			}
 			const name = parsed.definition.name;
+			// A definition must live in a file named after itself. The stem is
+			// compared exactly, so `ALPHA.md` does not satisfy `alpha`.
+			const base = basename(path);
+			const stem = base.toLowerCase().endsWith(".md") ? base.slice(0, -3) : base;
+			if (stem !== name) {
+				diagnostics.push({
+					level: "warning",
+					message: `definition file "${base}" must be named "${name}.md" to match its name field`,
+					path,
+				});
+				continue;
+			}
 			if (parsed.definition.kind === "sub" && parsed.definition.delegate) {
 				diagnostics.push({
 					level: "warning",
@@ -171,6 +183,9 @@ export function discoverAgents(dirs: RegistryDirs, now: () => number): Discovery
 					});
 					continue;
 				}
+				// Within one directory a stem is unique and must equal the name, so
+				// two definitions in the SAME directory can no longer collide. This
+				// branch is now reachable only ACROSS directories.
 				// Same trust class (or two gated sources): the first one discovered wins.
 				diagnostics.push({
 					level: "info",

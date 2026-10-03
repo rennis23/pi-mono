@@ -18,12 +18,21 @@
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverAgents } from "./registry.js";
 
 /** The roster every release of this package is expected to ship. */
-const EXPECTED_BUNDLED_AGENTS = ["explorer", "planner", "reviewer", "builder", "socrates", "productbuilder"];
+const EXPECTED_BUNDLED_AGENTS = [
+	"explorer",
+	"planner",
+	"reviewer",
+	"builder",
+	"verifier",
+	"security-reviewer",
+	"socrates",
+	"product-builder",
+];
 
 let root: string;
 let agentDir: string;
@@ -63,14 +72,33 @@ describe("bundled agent artifacts", () => {
 		}
 	});
 
-	it("ships productbuilder as a delegating main-kind orchestrator with read-only tools", () => {
+	it("ships product-builder as a delegating main-kind orchestrator with read-only tools", () => {
 		const { agents } = bundledAgents();
-		const pb = agents.find((agent) => agent.definition.name === "productbuilder");
+		const pb = agents.find((agent) => agent.definition.name === "product-builder");
 		expect(pb?.definition.kind).toBe("main");
 		expect(pb?.definition.delegate).toBe(true);
 		expect(pb?.definition.tools).toEqual(["read", "grep", "find", "ls"]);
 		// Delegation is declared via the flag, never by granting the spawn tool.
 		expect(pb?.definition.tools ?? []).not.toContain("mx_pi_agent");
+	});
+
+	it("names every shipped definition file after its frontmatter name", () => {
+		const { agents } = bundledAgents();
+		for (const agent of agents) {
+			const base = basename(agent.source.path);
+			const stem = base.toLowerCase().endsWith(".md") ? base.slice(0, -3) : base;
+			const expected = agent.definition.name;
+			expect(stem, `definition file "${base}" must be named "${expected}.md"`).toBe(expected);
+		}
+	});
+
+	it("ships the verifier with a shell so the suite can run, and a read-only security-reviewer", () => {
+		const { agents } = bundledAgents();
+		const verifier = agents.find((agent) => agent.definition.name === "verifier");
+		expect(verifier?.definition.tools).toContain("bash");
+		expect(verifier?.definition.sandbox).toBe("os");
+		const securityReviewer = agents.find((agent) => agent.definition.name === "security-reviewer");
+		expect(securityReviewer?.definition.tools ?? []).not.toContain("bash");
 	});
 
 	it("ships socrates as a persona with no tools, skills or context files", () => {

@@ -222,13 +222,20 @@ this bus, so it publishes nothing.
 | `reviewer` | read, grep, find, ls | Defect-focused code review, severity-ranked |
 | `builder` | read, grep, find, ls, edit, write, bash | Scoped implementation with tests and self-verification |
 | `socrates` | none (persona) | Socratic questioning of a problem with a chosen number of questions; proposes no answers |
-| `productbuilder` | read, grep, find, ls + delegation | Orchestrates explorer → planner → builder → reviewer through a task and reports a commit message and PR description |
+| `product-builder` | read, grep, find, ls + delegation | Orchestrates explorer → planner → builder → reviewer through a task and reports a commit message and PR description |
+| `verifier` | read, grep, find, ls, bash | Runs the test suite, lint and typecheck and reports raw output as evidence; never edits |
+| `security-reviewer` | read, grep, find, ls | Audits a change against the trust boundaries and `SECURITY.md` invariants; severity-ranked findings |
 
-`productbuilder` is a `main`-kind orchestrator with `delegate: true`: switching
-to it with `#productbuilder <task>` keeps `mx_pi_agent` active while narrowing
+`product-builder` is a `main`-kind orchestrator with `delegate: true`: switching
+to it with `#product-builder <task>` keeps `mx_pi_agent` active while narrowing
 the other tools to read-only, so it can direct specialists but cannot modify the
 tree itself. It only emits the commit message, PR title and PR description; it
 does not open the PR.
+
+`product-builder` runs Verify and Security as mandatory stages before it reports:
+it delegates to `verifier` for raw test/lint/typecheck output and to
+`security-reviewer` to audit the change, and a Critical or High finding blocks the
+report until it is fixed and re-reviewed.
 
 `builder` is the only bundled agent with write access and a shell; its `bash`
 runs under `sandbox: os`, and every bundled file tool is path-confined to the
@@ -262,7 +269,7 @@ You are a review agent. Report findings as a list, most severe first.
 
 | Field | Required | Values | Notes |
 | --- | --- | --- | --- |
-| `name` | yes | `[a-z0-9][a-z0-9_-]{0,63}` | Identity; also the `agent` value in tool calls. `none` is reserved |
+| `name` | yes | `[a-z0-9][a-z0-9_-]{0,63}` | Identity; also the `agent` value in tool calls. `none` is reserved. The canonical form is kebab-case for multi-word names (e.g. `product-builder`), and the definition file MUST be named `<name>.md` or the definition is dropped at discovery with a warning |
 | `description` | yes | ≤ 512 chars | Shown in the roster |
 | `kind` | no | `main` (default), `persona`, `sub` | What a bare `#name` does. See [agent kinds](#agent-kinds) |
 | `tools` | no | list of tool names | **Absent ≠ empty.** `[]` means no tools |
@@ -310,8 +317,21 @@ out-of-scope read, write or search is refused.
   ceiling. The only way to license such a run is an explicit `scope: ["/"]`
   ceiling in the config, which the `/mx-pi-agents status` output reports as
   `unconfined runs: allowed`.
-- `sandbox: os` confines the child's reads to the run scope plus an immutable OS
-  runtime allowance, and its writes to the run scope.
+- `sandbox: os` confines the child's content reads to the run scope plus an
+  immutable OS runtime allowance, and its writes to the run scope plus the system
+  temp directory. Path resolution must stat every ancestor of every path, so the
+  profile also carries a global metadata-only read (`(allow file-read-metadata)`)
+  — it reveals that a path exists, never its contents; content reads stay per-root
+  and there is no bare `(allow file-read*)`. The sandboxed shell can read
+  the resolved JavaScript toolchain directories (`node`/`npm`/`npx`) and the
+  library directories of the package manager prefix that installed the runtime
+  (`opt`/`Cellar`) plus its `etc` directory in addition to the system binary
+  directories, so tests can run inside the sandbox — the runtime's dynamic
+  dependencies must be readable for `node` to start at all, and node reads its
+  own configuration there (`etc/openssl@3/openssl.cnf` on Homebrew) before it can
+  run a script. The system temp directory is read/write (scratch space a runner
+  needs); the npm cache (`~/.npm`, or `npm_config_cache`) is read-only, so a
+  sandboxed child cannot poison a cache the host later reads.
 
 ## Trust and approval
 

@@ -142,6 +142,9 @@ user-visible names must begin with `mx-pi-`:
 - Skills (e.g. under `sandbox/skills/`): `mx-pi-<name>/SKILL.md`
 - Include `"pi": { "extensions": ["./index.ts"] }` in `package.json`
 
+Agent names are kebab-case (e.g. `product-builder`); a definition file must be
+named `<name>.md` to match its frontmatter name, or it is dropped at discovery.
+
 ### Extension structure
 
 Each extension exports a default function that receives `ExtensionAPI`:

@@ -2,9 +2,9 @@
 name: explorer
 description: Read-only reconnaissance of a codebase, answering one question with file and line evidence
 tools: [read, grep, find, ls]
-max_turns: 20
+max_turns: 50
 timeout_ms: 300000
-token_budget: 150000
+token_budget: 500000
 ---
 
 # Explorer agent

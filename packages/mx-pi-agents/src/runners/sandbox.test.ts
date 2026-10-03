@@ -1,5 +1,6 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,10 +12,14 @@ import {
 	createSandboxedBashOperations,
 	detectBackend,
 	isSandboxAvailable,
+	packageManagerReadRoots,
 	SEATBELT_PROFILE_NAME,
 	SEATBELT_SYSTEM_READ_ROOTS,
+	sandboxTempRoots,
 	sandboxUnavailableReason,
 	shellQuote,
+	toolchainLibraryRoots,
+	toolchainReadRoots,
 	whichBinary,
 } from "./sandbox.js";
 import { writeSystemPromptFile } from "./subprocess.js";
@@ -53,6 +58,12 @@ describe("buildSeatbeltProfile", () => {
 		expect(profile).toContain('(allow file-write* (subpath "/b"))');
 	});
 
+	it("includes the toolchain allowance and never a bare host-wide read", () => {
+		const profile = buildSeatbeltProfile(["/w"], ["/r"]);
+		expect(profile).toContain(`(allow file-read* (subpath "${SEATBELT_SYSTEM_READ_ROOTS[0]}"))`);
+		expect(profile).not.toMatch(/\(allow file-read\*\)/);
+	});
+
 	it("escapes quotes in paths", () => {
 		const profile = buildSeatbeltProfile(['/we"ird'], ['/we"ird']);
 		expect(profile).toContain('(subpath "/we\\"ird")');
@@ -70,15 +81,147 @@ describe("buildSeatbeltProfile", () => {
 			"; reads: the system binary directories plus the run scope (no host-wide file-read*)",
 			...SEATBELT_SYSTEM_READ_ROOTS.map((root) => `(allow file-read* (subpath "${root}"))`),
 			'(allow file-read* (subpath "/r"))',
+			"; path resolution needs to stat every ancestor, not just the roots",
+			"(allow file-read-metadata)",
 			"(allow sysctl-read)",
 			"(allow mach-lookup)",
-			"; writes only under the roots the runner explicitly allows",
+			"; writes only under the run scope plus the system temp directory",
 			"(deny file-write*)",
 			'(allow file-write* (subpath "/w"))',
+			...sandboxTempRoots().map((root) => `(allow file-write* (subpath "${root}"))`),
 			"; no network egress from a sandboxed child",
 			"(deny network*)",
 		].join("\n");
 		expect(buildSeatbeltProfile(["/w"], ["/r"])).toBe(expected);
+	});
+
+	it("allows metadata reads so path resolution can stat ancestors", () => {
+		const profile = buildSeatbeltProfile(["/w"], ["/r"]);
+		expect(profile).toContain("(allow file-read-metadata)");
+		expect(profile).not.toContain("(allow file-read-metadata (subpath");
+	});
+
+	it("allows writes under the system temp directory", () => {
+		const profile = buildSeatbeltProfile(["/w"], ["/r"]);
+		for (const root of sandboxTempRoots()) {
+			expect(profile).toContain(`(allow file-write* (subpath "${root}"))`);
+		}
+	});
+
+	it("still emits the temp write clause when no scope root is writable", () => {
+		const profile = buildSeatbeltProfile([], []);
+		expect(profile).toContain("(deny file-write*)");
+		const roots = sandboxTempRoots();
+		if (roots.length > 0) {
+			expect(profile).toMatch(/\(allow file-write\* \(subpath /);
+		}
+	});
+});
+
+const SEATBELT_EXEC = "/usr/bin/sandbox-exec";
+const canExecuteProfile = process.platform === "darwin" && existsSync(SEATBELT_EXEC);
+
+/**
+ * The profile is only worth anything if a real process survives it. These tests
+ * EXECUTE the generated profile instead of asserting its shape: the string-level
+ * golden test above passed while the shipped profile could not start `node` at all.
+ */
+describe.skipIf(!canExecuteProfile)("buildSeatbeltProfile, executed", () => {
+	function runUnderProfile(command: string): { status: number | null; stdout: string; stderr: string } {
+		const dir = mkdtempSync(join(tmpdir(), "mx-pi-seatbelt-it-"));
+		try {
+			const profilePath = join(dir, "profile.sb");
+			writeFileSync(profilePath, buildSeatbeltProfile([process.cwd()], [process.cwd()]));
+			const result = spawnSync(SEATBELT_EXEC, buildSeatbeltArgv(profilePath, command), {
+				encoding: "utf8",
+				timeout: 30_000,
+			});
+			return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}
+
+	it("runs a real node script: binary, dylibs, OpenSSL config and path resolution", () => {
+		const result = runUnderProfile(
+			`"${process.execPath}" -e 'process.stdout.write(require("node:fs").realpathSync("."))'`,
+		);
+		expect(result.status).toBe(0);
+		expect(result.stdout.length).toBeGreaterThan(0);
+	});
+
+	it("resolves an entry file through its ancestors", () => {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "mx-pi-seatbelt-entry-")));
+		try {
+			writeFileSync(join(dir, "entry.js"), 'console.log("entry-ok")');
+			const result = runUnderProfile(`"${process.execPath}" "${join(dir, "entry.js")}"`);
+			expect(result.status).toBe(0);
+			expect(result.stdout.trim()).toBe("entry-ok");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("allows writes under the temp directory", () => {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "mx-pi-seatbelt-write-")));
+		try {
+			const result = runUnderProfile(`echo ok > "${join(dir, "yes.txt")}"`);
+			expect(result.status).toBe(0);
+			expect(statSync(join(dir, "yes.txt")).size).toBeGreaterThan(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("denies writes to the home directory", () => {
+		const probe = join(homedir(), "mx-pi-agents-must-not-write.txt");
+		const result = runUnderProfile(`echo no > "${probe}"`);
+		try {
+			expect(result.status).not.toBe(0);
+			expect(existsSync(probe)).toBe(false);
+		} finally {
+			rmSync(probe, { force: true });
+		}
+	});
+
+	it("denies network egress", () => {
+		const result = runUnderProfile(
+			`"${process.execPath}" -e 'fetch("http://example.com").then(()=>process.exit(0),()=>process.exit(1))'`,
+		);
+		expect(result.status).not.toBe(0);
+	});
+});
+
+describe("sandboxTempRoots", () => {
+	it("resolves the system temp directory through realpath and dedupes", () => {
+		expect(sandboxTempRoots("/tmp")).toEqual([realpathSync("/tmp")]);
+	});
+
+	it("ignores a temp directory that does not exist", () => {
+		expect(sandboxTempRoots("/nonexistent-mx-pi-tmp")).not.toContain("/nonexistent-mx-pi-tmp");
+	});
+
+	it("returns no empty root", () => {
+		expect(sandboxTempRoots("")).not.toContain("");
+	});
+});
+
+describe("packageManagerReadRoots", () => {
+	it("returns nothing for a cache directory that does not exist", () => {
+		expect(packageManagerReadRoots("/nonexistent-mx-pi-cache")).toEqual([]);
+	});
+
+	it("resolves an existing cache directory through realpath", () => {
+		const dir = mkdtempSync(join(tmpdir(), "mx-pi-agents-cache-"));
+		try {
+			expect(packageManagerReadRoots(dir)).toEqual([realpathSync(dir)]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("returns no root for an empty cache path", () => {
+		expect(packageManagerReadRoots("")).toEqual([]);
 	});
 });
 
@@ -173,6 +316,76 @@ describe("whichBinary", () => {
 
 	it("returns undefined without a PATH", () => {
 		expect(whichBinary("sh", undefined)).toBeUndefined();
+	});
+});
+
+describe("toolchainReadRoots", () => {
+	it("derives the directory of a real node binary", () => {
+		const dir = mkdtempSync(join(tmpdir(), "mx-pi-agents-toolchain-"));
+		try {
+			writeFileSync(join(dir, "node"), "");
+			const roots = toolchainReadRoots(join(dir, "node"), undefined);
+			expect(roots).toContain(dir);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("is total when nothing resolves", () => {
+		// `undefined` would trigger the default parameter (`process.env.PATH`), so
+		// "nothing resolves" needs a directory that does not exist.
+		expect(toolchainReadRoots("/nonexistent/xyz/node", "/nonexistent/xyz/bin")).toEqual([]);
+	});
+
+	it("never returns the filesystem root or an empty string", () => {
+		const dir = mkdtempSync(join(tmpdir(), "mx-pi-agents-toolchain-"));
+		try {
+			writeFileSync(join(dir, "node"), "");
+			const roots = toolchainReadRoots(join(dir, "node"), undefined);
+			expect(roots).not.toContain("/");
+			expect(roots).not.toContain("");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("toolchainLibraryRoots", () => {
+	it("derives the package manager's opt and Cellar directories under a Homebrew-shaped prefix", () => {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "mx-pi-agents-library-")));
+		try {
+			const binDir = join(dir, "fake", "Cellar", "node", "26", "bin");
+			mkdirSync(binDir, { recursive: true });
+			writeFileSync(join(binDir, "node"), "");
+			mkdirSync(join(dir, "fake", "Cellar"), { recursive: true });
+			mkdirSync(join(dir, "fake", "opt"), { recursive: true });
+			mkdirSync(join(dir, "fake", "etc"), { recursive: true });
+			const roots = toolchainLibraryRoots(join(dir, "fake", "Cellar", "node", "26", "bin", "node"));
+			expect(roots).toContain(join(dir, "fake", "Cellar"));
+			expect(roots).toContain(join(dir, "fake", "opt"));
+			expect(roots).toContain(join(dir, "fake", "etc"));
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses the home directory as a library prefix", () => {
+		expect(toolchainLibraryRoots(join(homedir(), "bin", "node"))).toEqual([]);
+	});
+
+	it("returns only directories that exist", () => {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "mx-pi-agents-library-")));
+		try {
+			const binDir = join(dir, "fake", "Cellar", "node", "26", "bin");
+			mkdirSync(binDir, { recursive: true });
+			writeFileSync(join(binDir, "node"), "");
+			mkdirSync(join(dir, "fake", "Cellar"), { recursive: true });
+			mkdirSync(join(dir, "fake", "opt"), { recursive: true });
+			const roots = toolchainLibraryRoots(join(dir, "fake", "Cellar", "node", "26", "bin", "node"));
+			expect(roots).not.toContain(join(dir, "fake", "lib"));
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 

@@ -136,7 +136,7 @@ describe("planSwitch: delegate", () => {
 			currentTools: ["read", "grep", "find", "ls"],
 			isModelAvailable: () => true,
 		};
-		const outcome = planSwitch(makeAgent({ name: "productbuilder", agentKind: "main", delegate: true }), narrowed);
+		const outcome = planSwitch(makeAgent({ name: "product-builder", agentKind: "main", delegate: true }), narrowed);
 		expect(outcome.ok).toBe(true);
 		if (!outcome.ok) return;
 		expect(outcome.plan.applied.tools).toEqual(["read", "grep", "find", "ls", "mx_pi_agent"]);

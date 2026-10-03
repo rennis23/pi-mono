@@ -5,7 +5,7 @@ tools: [read, grep, find, ls]
 thinking: medium
 max_turns: 20
 timeout_ms: 300000
-token_budget: 150000
+token_budget: 300000
 ---
 
 # Reviewer agent

@@ -12,8 +12,9 @@
  * unsandboxed — `sandbox: os` means sandboxed or not at all.
  */
 
-import { existsSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, dirname, join } from "node:path";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 
 export type SandboxBackend = "seatbelt" | "bwrap";
@@ -33,8 +34,111 @@ export const SEATBELT_PROFILE_NAME = "mx-pi-agents";
  */
 export const SEATBELT_SYSTEM_PROFILE = "system.sb";
 
-/** System binary directories a sandboxed shell must read to exec external tools. */
-export const SEATBELT_SYSTEM_READ_ROOTS: readonly string[] = ["/usr", "/bin", "/sbin"];
+/**
+ * System binary directories a sandboxed shell must read to exec external tools:
+ * the immutable system surface plus the resolved JavaScript toolchain.
+ */
+export const SEATBELT_SYSTEM_READ_ROOTS: readonly string[] = uniqueRoots([
+	"/usr",
+	"/bin",
+	"/sbin",
+	...toolchainReadRoots(),
+	...packageManagerReadRoots(),
+	...sandboxTempRoots(),
+]);
+
+/**
+ * The package-manager prefix a binary was installed under.
+ *
+ * A Homebrew binary lives at `<prefix>/Cellar/<formula>/<version>/bin/<name>`, so
+ * the prefix is the ancestor above `Cellar`. Any other layout (nvm, fnm, volta, a
+ * manual install) uses the install prefix two levels above the binary.
+ */
+function toolchainPrefix(execPath: string): string {
+	let real = execPath;
+	try {
+		real = realpathSync(execPath);
+	} catch {
+		/* fall back to the unresolved path */
+	}
+	const marker = "/Cellar/";
+	const index = real.indexOf(marker);
+	if (index > 0) return real.slice(0, index);
+	return dirname(dirname(real));
+}
+
+/**
+ * Library directories of the prefix that installed the toolchain.
+ *
+ * `node` does not carry its dynamic dependencies: on Homebrew the runtime links
+ * against sibling formulae, reached as `<prefix>/opt/<formula>` and stored under
+ * `<prefix>/Cellar/<formula>`. Without both, dyld aborts with `Library not
+ * loaded ... (blocked by sandbox)` before any test can start. The prefix's `etc` is
+ * also allowed, because the runtime reads its own configuration there (for example
+ * `openssl.cnf`) and aborts at OpenSSL initialisation if it cannot — so `node
+ * --version` works but every script fails without it. Only directories that exist
+ * are returned, and the home directory is refused as a library prefix so a stray
+ * install directly in `$HOME` cannot grant the whole home tree.
+ */
+export function toolchainLibraryRoots(execPath: string): string[] {
+	const prefix = toolchainPrefix(execPath);
+	if (prefix === homedir() || prefix === "/") return [];
+	const roots: string[] = [];
+	for (const name of ["bin", "lib", "opt", "Cellar", "etc"]) {
+		const candidate = join(prefix, name);
+		if (existsSync(candidate)) roots.push(candidate);
+	}
+	return roots;
+}
+
+/**
+ * Real directories that hold the JavaScript toolchain.
+ *
+ * A sandboxed `bash` must be able to exec `node`, `npm` and `npx`, and on most
+ * installs those live outside `/usr`, `/bin` and `/sbin` (Homebrew, nvm, fnm,
+ * volta). The paths are derived from the running process — the toolchain the
+ * operator actually has — and resolved through realpath, because seatbelt
+ * matches real paths. Anything unresolvable contributes nothing rather than a
+ * guess, so this function is total.
+ */
+export function toolchainReadRoots(
+	execPath: string = process.execPath,
+	path: string | undefined = process.env.PATH,
+): string[] {
+	const roots: string[] = [];
+
+	const add = (candidate: string | undefined): void => {
+		if (candidate === undefined || candidate.length === 0) return;
+		try {
+			const real = realpathSync(candidate);
+			// The unresolved path matters too: reading `npm` follows a symlink, so
+			// both the symlink's directory and its target's directory must be readable.
+			roots.push(dirname(candidate));
+			roots.push(dirname(real));
+			// A package manager may keep its global modules beside the prefix
+			// rather than under it, so include the enclosing `node_modules`.
+			const parts = real.split("/");
+			const index = parts.lastIndexOf("node_modules");
+			if (index > 0) roots.push(parts.slice(0, index + 1).join("/"));
+		} catch {
+			/* an unresolvable candidate contributes nothing */
+		}
+	};
+
+	add(execPath);
+	for (const name of ["npm", "npx"]) add(whichBinary(name, path));
+
+	// The node install prefix holds the runtime's own libraries.
+	try {
+		roots.push(dirname(dirname(realpathSync(execPath))));
+	} catch {
+		/* nothing to add */
+	}
+
+	roots.push(...toolchainLibraryRoots(execPath));
+
+	return uniqueRoots(roots).filter((root) => root.length > 1 && root !== "/");
+}
 
 /** System paths a `bwrap` child needs read-only to exec bash (Linux). */
 export const BWRAP_READ_ROOTS: readonly string[] = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"];
@@ -52,12 +156,56 @@ function seatbeltQuote(value: string): string {
 }
 
 /**
+ * Scratch directories a sandboxed child may read and write.
+ *
+ * A test runner routinely needs scratch space outside the project. The system
+ * temp directory is the only such place granted, and it is resolved through
+ * realpath because seatbelt matches real paths (`/tmp` is a symlink to
+ * `/private/tmp` on macOS). `TMPDIR` is honoured so the caller's own temp root is
+ * covered rather than guessed.
+ */
+export function sandboxTempRoots(tmp: string | undefined = process.env.TMPDIR): string[] {
+	const roots: string[] = [];
+	for (const candidate of [tmp ?? "", "/tmp", "/private/tmp"]) {
+		if (candidate.length === 0) continue;
+		try {
+			roots.push(realpathSync(candidate));
+		} catch {
+			/* an absent temp directory contributes nothing */
+		}
+	}
+	return uniqueRoots(roots);
+}
+
+/**
+ * Roots the package manager reads for its own cache and user configuration.
+ *
+ * npm reads its cache and `~/.npmrc`; denying them is usually tolerated but turns
+ * into confusing warnings, so the cache is granted read-only. It is deliberately
+ * never a write root: a sandboxed child must not be able to poison a cache that
+ * the unsandboxed host later reads.
+ */
+export function packageManagerReadRoots(
+	cache: string = process.env.npm_config_cache ?? join(homedir(), ".npm"),
+): string[] {
+	if (cache.length === 0) return [];
+	try {
+		return [realpathSync(cache)];
+	} catch {
+		return [];
+	}
+}
+
+/**
  * Generate a seatbelt profile.
  *
  * Default deny, then: read the immutable system allowlist plus the run's read
  * roots (never a bare host-wide `(allow file-read*)`), write only under
- * `writeRoots`, and no network. Writes are the primary capability this sandbox
- * bounds; read confinement is per-root plus the documented system allowance.
+ * `writeRoots` plus the system temp directory, and no network. A global metadata
+ * read (`file-read-metadata`) is granted so path resolution can stat every
+ * ancestor of an entry path — metadata only, never contents. Writes are the
+ * primary capability this sandbox bounds; read confinement is per-root plus the
+ * documented system allowance.
  */
 export function buildSeatbeltProfile(writeRoots: readonly string[], readRoots: readonly string[] = []): string {
 	const lines = ["(version 1)", "(deny default)"];
@@ -72,12 +220,14 @@ export function buildSeatbeltProfile(writeRoots: readonly string[], readRoots: r
 	for (const root of uniqueRoots([...SEATBELT_SYSTEM_READ_ROOTS, ...readRoots])) {
 		lines.push(`(allow file-read* (subpath ${seatbeltQuote(root)}))`);
 	}
+	lines.push("; path resolution needs to stat every ancestor, not just the roots");
+	lines.push("(allow file-read-metadata)");
 	lines.push("(allow sysctl-read)");
 	lines.push("(allow mach-lookup)");
 
-	lines.push("; writes only under the roots the runner explicitly allows");
+	lines.push("; writes only under the run scope plus the system temp directory");
 	lines.push("(deny file-write*)");
-	for (const root of uniqueRoots(writeRoots)) {
+	for (const root of uniqueRoots([...writeRoots, ...sandboxTempRoots()])) {
 		lines.push(`(allow file-write* (subpath ${seatbeltQuote(root)}))`);
 	}
 

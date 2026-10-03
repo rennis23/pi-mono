@@ -151,9 +151,12 @@ Scope model:
 
 `sandbox: os` is an opt-in per-agent wrapper for the `bash` tool only:
 `sandbox-exec` with a generated seatbelt profile on macOS, `bwrap` on Linux. It
-reads only the run scope plus an immutable system runtime allowance and writes
-only under the run scope; network is denied. If no backend is available the run
-is **refused**, never silently unsandboxed.
+reads only the run scope plus an immutable system runtime allowance — the system
+runtime, the resolved JavaScript toolchain directories, and the library
+directories (`bin`, `lib`, `opt`, `Cellar`, `etc`) of the package manager prefix
+that installed the runtime (see Section 3) — and writes only under the run scope;
+network is denied. If no backend is available the run is **refused**, never
+silently unsandboxed.
 
 ### B5 — definitions are pinned
 
@@ -239,8 +242,54 @@ assume:
   operator's full filesystem access and a definition-declared narrow scope is
   refused rather than ignored; (b) inside `sandbox: os`, the immutable macOS
   system runtime paths (the dynamic loader and `/usr`, `/bin`, `/sbin`, `/dev`,
-  `/etc`) stay readable — user data outside the run scope does not; (c) a granted
+  `/etc`) and the resolved JavaScript toolchain directories stay readable — user
+  data outside the run scope does not; (c) a granted
   `bash` can still attempt anything the sandbox permits.
+- **A sandboxed child can read the host's JavaScript toolchain directories.** A
+  sandboxed `bash` must be able to exec `node`/`npm`/`npx`, and on most installs
+  (Homebrew, nvm, fnm, volta) those live outside `/usr`, `/bin` and `/sbin`. The
+  seatbelt read allowance therefore also includes the realpaths of `node`, `npm`
+  and `npx`, the node install prefix, and the enclosing global `node_modules`.
+  A `node` binary does not carry its dynamic dependencies, so on Homebrew the
+  runtime links against sibling formulae under the package manager prefix
+  (`<prefix>/opt/<formula>`, stored under `<prefix>/Cellar/<formula>`); until
+  those libraries are readable, `node` aborts under dyld with `Library not
+  loaded` (exit 134) before any test can start. The allowance therefore also
+  adds the package manager prefix's `bin`, `lib`, `opt`, `Cellar` and `etc`
+  directories when they exist — the runtime also reads its own configuration
+  there, such as `<prefix>/etc/openssl@3/openssl.cnf`, and without it node aborts
+  at OpenSSL initialisation (`node --version` still succeeds while every script
+  fails). The prefix is derived from the running process too — the
+  ancestor above `Cellar` when the binary lives in one, otherwise the install
+  prefix two levels above the binary — and the home directory is explicitly
+  refused as a library prefix, so an install directly in `$HOME` cannot grant
+  the whole home tree. All of this is resolved through realpath rather than
+  hardcoded, and it is necessary for a test runner to function inside the
+  sandbox. It remains far narrower than a host-wide read: it grants the
+  directories that hold the toolchain and its package-manager libraries, not
+  general user data, and a candidate that does not resolve contributes nothing.
+  That claim is about **content** reads, and it must not be read as "no global
+  read rule at all". Content reads remain per-root and there is still no bare
+  `(allow file-read*)`; what the profile now also carries is a bare
+  `(allow file-read-metadata)`. That rule is metadata-only — it reveals that a
+  path exists, never its contents — and it is required because path resolution
+  must stat every ancestor of every path. A `(subpath X)` rule grants X and its
+  descendants but says nothing about X's ancestors, so per-root metadata rules
+  were rejected as a whack-a-mole that would recur whenever node resolved a path
+  outside the roots: Node's loader `realpathSync`s the entry path and lstats
+  `/`, `/Users`, `/Users/<user>`, `/opt` and `/opt/homebrew`, and without the
+  global rule `npx`, `npm` and `node <file>` all failed with `EPERM: operation
+  not permitted, lstat '/opt'` (or `lstat '/Users'`) before the script ran, while
+  inline `node -e` worked because it resolves no entry file.
+  Two further allowances are scratch space and a cache, not user data. The system
+  temp directory (`TMPDIR`, `/tmp`, `/private/tmp`, resolved through realpath) is
+  readable **and** writable, because a test runner routinely needs scratch space
+  outside the project; it is world-writable sticky-bit scratch, not user data. The
+  npm cache (`~/.npm`, or `npm_config_cache`) is readable but **not** writable,
+  because npm reads its cache and `~/.npmrc` and a sandboxed child must not be
+  able to poison a cache the unsandboxed host later reads. None of this is a
+  host-wide content read, and reads are not the boundary this sandbox enforces —
+  writes and network are.
 - **Network egress is not enforced** except inside `sandbox: os`.
 - **Approval is a decision, not a sandbox.** Approving a project agent means "I
   reviewed this definition at this hash". It does not restrict what that
@@ -265,6 +314,16 @@ assume:
   and is removed in `finally`, but a determined local attacker with the same UID
   could read it while the child runs. It contains no secrets by construction
   beyond the definition body the operator already has on disk.
+- Within `sandbox: os`, the system temp directory (`TMPDIR`, `/tmp`,
+  `/private/tmp`, resolved through realpath) is readable **and** writable. A test
+  runner routinely needs scratch space outside the project; this is world-writable
+  sticky-bit scratch, not user data, and it is the only write location beyond the
+  run scope.
+- Within `sandbox: os`, the npm cache (`~/.npm`, or `npm_config_cache`) is
+  readable but deliberately not writable. npm reads its cache and `~/.npmrc`; it
+  is read-only so a sandboxed child cannot poison a cache the unsandboxed host
+  later reads. These read allowances remain far narrower than a host-wide read,
+  and reads are not the boundary this sandbox enforces — writes and network are.
 - Approval entries expire after 180 days and are pruned when the file they refer
   to no longer exists.
 
@@ -289,7 +348,7 @@ assume:
 | Default scope is `[cwd]` | A missing declaration must mean the run's own directory, never "everything". Absent and empty stay distinct: absent is cwd, `scope: []` is a refusal. |
 | A vector that cannot be path-confined is refused | Unsandboxed `bash` and `isolation: subprocess` have no hook this extension can check, so the run is refused (`scope-unenforceable`) unless the operator types the explicit `/` ceiling. Pretending to confine them would make invariant 11 false. |
 | A `/` ceiling overrides the cwd default only for unconfineable vectors | It is the one typed "unrestricted" declaration. A definition-declared narrow scope combined with an unconfineable vector is still refused: a definition may tighten, never loosen. |
-| macOS read narrowing uses the `system.sb` import plus the run scope | Hand-listing runtime paths (`/usr`, `/System`, dyld, …) aborts bash: seatbelt needs the rest of the system runtime surface. `system.sb` grants process startup but not user data, so reads outside the run scope (`$HOME`, `~/.pi`, another project, a temp dir) stay denied. |
+| macOS read narrowing uses the `system.sb` import plus the run scope | Hand-listing runtime paths (`/usr`, `/System`, dyld, …) aborts bash: seatbelt needs the rest of the system runtime surface. `system.sb` grants process startup but not user data, so content reads outside the run scope (`$HOME`, `~/.pi`, another project, another temp dir) stay denied. The named exceptions are the global metadata-only read, the readable/writable system temp directory, and the read-only npm cache (see Section 3). |
 | Enforcement at `ToolDefinition.execute`, not the operations hook | pi's `GrepOperations`/`FindOperations` never receive the model-supplied search root, so wrapping operations cannot confine grep/find. `execute` sees every raw argument; an unrecognized shape is refused, never passed through. |
 | Child settings manager refuses an empty agent dir | `join("", "settings.json")` resolves against `process.cwd()`. Found during the hardening review: the runner was constructed with `agentDir: ""`, which would have read the target repository's settings. The manager now throws instead of resolving, and `index.ts` threads a single resolved dir everywhere. Regression tests: `src/security.test.ts` (invariant 1) and `src/runners/in-process.test.ts`. |
 
@@ -308,11 +367,24 @@ sandbox: os
 
 - macOS: requires `/usr/bin/sandbox-exec` (present on stock macOS).
 - Linux: requires `bwrap` (bubblewrap) on `PATH`.
-- The sandbox reads the system runtime allowance and the run scope, and writes
-  only under the run scope. Network is denied. On macOS the allowance is the
-  built-in `system.sb` profile plus `/usr`, `/bin` and `/sbin`; user data outside
-  the run scope is denied. On Linux the allowlisted system roots are `--ro-bind`
-  read-only and the run scope is bind-mounted writable.
+- The sandbox reads the system runtime allowance, the run scope and a global
+  metadata-only rule, and writes only under the run scope plus the system temp
+  directory. Network is denied. Path resolution must stat every ancestor of every
+  path, so a bare `(allow file-read-metadata)` is present — metadata only, never
+  contents; content reads stay per-root and there is no bare
+  `(allow file-read*)`. On macOS the allowance is the built-in `system.sb`
+  profile plus `/usr`, `/bin`, `/sbin`, the resolved JavaScript toolchain
+  directories, the library directories (`bin`, `lib`, `opt`, `Cellar`, `etc`) of
+  the package manager prefix that installed the runtime, and the system temp
+  directory, so `node`/`npm`/`npx` can exec, dyld can load the runtime's dynamic
+  dependencies, and node can read its own configuration there (on Homebrew
+  `<prefix>/etc/openssl@3/openssl.cnf`, without which OpenSSL initialisation
+  aborts); the npm cache (`~/.npm`, or `npm_config_cache`) is readable but not
+  writable, so a sandboxed child cannot poison a cache the host later reads. The
+  temp directory is readable and writable — scratch space a runner needs; user
+  data outside the run scope is denied. On Linux the allowlisted system roots are
+  `--ro-bind` read-only, the run scope is bind-mounted writable, and `--tmpfs
+  /tmp` provides the scratch space (unchanged).
 - `/mx-pi-agents status` reports whether a backend is available.
 - If no backend is available, any run requesting `sandbox: os` is refused with
   `sandbox-unavailable`.

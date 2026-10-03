@@ -17,9 +17,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   delegating from a bare name must declare `kind: sub`.
 - `#none` is now reserved and resets the main session to plain pi. A definition
   named `none` is dropped at discovery with a diagnostic.
+- **Breaking:** the bundled `productbuilder` orchestrator is renamed to
+  `product-builder`. The old name no longer resolves and `#productbuilder` is
+  now an unknown agent.
+- **Breaking:** a definition file must be named `<name>.md` to match its
+  frontmatter `name` field. A mismatch is dropped at discovery with a warning
+  diagnostic. This applies to every source: bundled, global, config and project.
+- The `sandbox: os` seatbelt profile now also allows reading the resolved
+  JavaScript toolchain directories, so a sandboxed `bash` can exec `node`, `npm`
+  and `npx` on installs where the toolchain is not under `/usr`, `/bin` or
+  `/sbin` (Homebrew, nvm, fnm, volta). It also allows reading the package
+  manager's library directories (`opt`/`Cellar` under the derived prefix),
+  because the runtime's dynamic dependencies must load before `node` can start:
+  without them `node` aborts under dyld with `Library not loaded ... (blocked by
+  sandbox)` and exit 134. It also allows reading the prefix's `etc` directory,
+  because node reads its own configuration there — on Homebrew
+  `/opt/homebrew/etc/openssl@3/openssl.cnf` — and aborts at OpenSSL
+  initialisation without it (`node --version` succeeds while every script
+  fails). This is a deliberate widening of the sandboxed read
+  allowance. `SEATBELT_SYSTEM_READ_ROOTS` is now derived at runtime from
+  `process.execPath` and `PATH` rather than hardcoded; see `SECURITY.md` for the
+  documented residual. It now also grants a global metadata-only read,
+  `(allow file-read-metadata)`, required because path resolution must stat every
+  ancestor of every path: a `(subpath X)` rule covers X and its descendants but
+  not X's ancestors, so `npx`, `npm` and `node <file>` failed with
+  `EPERM: operation not permitted, lstat '/opt'` (or `lstat '/Users'`) before the
+  script ran, while inline `node -e` worked. Content reads stay per-root and there
+  is still no bare `(allow file-read*)`. The system temp directory (resolved
+  through realpath) is now readable and writable so a test runner has scratch
+  space, and the npm cache (`~/.npm`, or `npm_config_cache`) is now readable but
+  deliberately not writable, so a sandboxed child cannot poison a cache the host
+  later reads. Writes remain otherwise limited to the run scope.
 
 ### Added
 
+- Bundled `verifier` agent: a read-only-with-evidence runner (`read`, `grep`,
+  `find`, `ls`, `bash` under `sandbox: os`) that runs the test suite, lint and
+  typecheck and reports the raw output verbatim. It never edits and never claims
+  a command passed without pasting the run that shows it.
+- Bundled `security-reviewer` agent: audits a change against the extension's trust
+  boundaries and the `SECURITY.md` invariants and returns severity-ranked,
+  CWE-tagged findings. It is read-only by design — `read`, `grep`, `find`, `ls` and
+  no `bash` — so it cannot execute repository-controlled code.
+- `product-builder` now runs verification and security review as mandatory stages
+  before it reports: it delegates to `verifier` and `security-reviewer`, and a
+  Critical or High finding blocks the report until it is fixed and re-reviewed.
 - Main-session delegation: a `delegate: true` frontmatter field on a
   `persona`/`main` definition keeps the `mx_pi_agent` tool active across a
   main-session switch. The flag unions `mx_pi_agent` into the applied tool
@@ -27,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   absent) and refuses the switch if the tool does not resolve. It is a
   main-session verb only: child runs ignore it, so a child can never delegate.
   `/mx-pi-agents list` marks delegating definitions with a `⇄ delegate` token.
-- Bundled `productbuilder` orchestrator: a `main`-kind agent with
+- Bundled `product-builder` orchestrator: a `main`-kind agent with
   `delegate: true` and read-only tools that runs the
   explorer → planner → builder → reviewer pipeline and ends with a commit
   message plus a PR title and description (it does not open the PR).
