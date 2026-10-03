@@ -25,5 +25,8 @@ packages/*/node_modules
 .npm/
 coverage/
 .nyc_output/
+.codeql/
+.stryker-tmp/
+reports/
 packages/*/dist/
 sandbox/images/pi-agent.tar

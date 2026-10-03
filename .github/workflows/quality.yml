@@ -1,0 +1,112 @@
+name: Quality and security
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 22.x
+
+jobs:
+  quality:
+    name: quality
+    runs-on: ubuntu-latest
+    steps:
+      # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+
+  package-security:
+    name: package-security
+    runs-on: ubuntu-latest
+    steps:
+      # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run security:packages
+      - run: npm run security:audit
+
+  mutation-changed:
+    name: mutation-changed
+    runs-on: ubuntu-latest
+    steps:
+      # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Mutate changed package source
+        env:
+          BASE_SHA: >-
+            ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: npm run mutation:changed -- "$BASE_SHA"
+
+  codeql:
+    name: codeql
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      # v3.28.17
+      # init installs the bundled CLI but does not add `codeql` to PATH;
+      # its `codeql-path` output is passed to the script as CODEQL_BIN.
+      - id: codeql-init
+        uses: github/codeql-action/init@60168efe1c415ce0f5521ea06d5c2062adbeed1b
+        with:
+          languages: javascript-typescript
+          config-file: ./.github/codeql/codeql-config.yml
+      # The shared SARIF gate inside the script fails the job on any finding,
+      # so findings are published in the job log.
+      # Do not add github/codeql-action/upload-sarif: GitHub rejects CodeQL
+      # analyses from advanced configurations while default setup is enabled.
+      - run: npm run security:codeql
+        env:
+          CODEQL_BIN: ${{ steps.codeql-init.outputs.codeql-path }}
+
+  dependency-review:
+    name: dependency-review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # v4.6.0
+      - uses: >-
+          actions/dependency-review-action@ce3cf9537a52e8119d91fd484ab5b8a807627bf8
+        with:
+          fail-on-severity: high

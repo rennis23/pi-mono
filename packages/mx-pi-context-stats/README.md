@@ -104,6 +104,13 @@ npm run check   # biome + tsc
 npm test        # vitest
 ```
 
+## Security
+
+The extension runs inside the pi host process and writes only its own config
+file under the active pi agent directory. It does not provide process
+sandboxing or authenticate other local writers. See [SECURITY.md](./SECURITY.md)
+for the threat model, enforced controls, residual risks, and reporting route.
+
 ## License
 
 MIT

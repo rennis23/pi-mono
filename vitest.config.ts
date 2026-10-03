@@ -1,8 +1,9 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
 	test: {
-		include: ["packages/*/**/*.test.ts"],
+		include: ["packages/*/**/*.test.ts", "scripts/**/*.test.mjs"],
+		exclude: [...configDefaults.exclude, "sandbox/**"],
 		setupFiles: ["./test/setup.ts"],
 		unstubGlobals: true,
 		clearMocks: true,
