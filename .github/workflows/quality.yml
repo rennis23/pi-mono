@@ -83,11 +83,16 @@ jobs:
           cache: npm
       - run: npm ci
       # v3.28.17
-      - uses: github/codeql-action/init@60168efe1c415ce0f5521ea06d5c2062adbeed1b
+      # init installs the bundled CLI but does not add `codeql` to PATH;
+      # its `codeql-path` output is passed to the script as CODEQL_BIN.
+      - id: codeql-init
+        uses: github/codeql-action/init@60168efe1c415ce0f5521ea06d5c2062adbeed1b
         with:
           languages: javascript-typescript
           config-file: ./.github/codeql/codeql-config.yml
       - run: npm run security:codeql
+        env:
+          CODEQL_BIN: ${{ steps.codeql-init.outputs.codeql-path }}
       # v3.28.17
       - uses: >-
           github/codeql-action/upload-sarif@60168efe1c415ce0f5521ea06d5c2062adbeed1b

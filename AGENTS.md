@@ -107,6 +107,7 @@ export default function myExtension(pi: ExtensionAPI) {
 - `npm run security:packages` validates every direct workspace under `packages/`, including its `npm pack --dry-run` contents.
 - `npm run security:audit` blocks high and critical production dependency advisories.
 - `npm run security:codeql` uses the local CodeQL CLI with `security-extended` queries and fails on SARIF findings. The local pre-push hook skips this one check only when the CLI is unavailable; CI remains authoritative.
+- The CodeQL command honours `CODEQL_BIN` when the CLI is not on `PATH`. `github/codeql-action/init` does not put its bundled CLI on `PATH`, so the CI job passes that step's `codeql-path` output into the script as `CODEQL_BIN`.
 - `npm run mutation:changed` compares package source against `HEAD` locally or an explicit PR base SHA in CI. It skips tests, reports, generated files, and `sandbox/`.
 - Full mutation testing is available with `npm run mutation`, but changed-source mutation is the mandatory PR/local gate.
 
