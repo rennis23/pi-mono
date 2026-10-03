@@ -72,7 +72,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write
     steps:
       # v4.2.2
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -90,14 +89,13 @@ jobs:
         with:
           languages: javascript-typescript
           config-file: ./.github/codeql/codeql-config.yml
+      # The shared SARIF gate inside the script fails the job on any finding,
+      # so findings are published in the job log.
+      # Do not add github/codeql-action/upload-sarif: GitHub rejects CodeQL
+      # analyses from advanced configurations while default setup is enabled.
       - run: npm run security:codeql
         env:
           CODEQL_BIN: ${{ steps.codeql-init.outputs.codeql-path }}
-      # v3.28.17
-      - uses: >-
-          github/codeql-action/upload-sarif@60168efe1c415ce0f5521ea06d5c2062adbeed1b
-        with:
-          sarif_file: .codeql/results.sarif
 
   dependency-review:
     name: dependency-review

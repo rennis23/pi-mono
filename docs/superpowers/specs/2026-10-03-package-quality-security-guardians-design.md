@@ -141,7 +141,7 @@ npm run security:codeql
 
 The local command creates a disposable CodeQL database below an ignored `.codeql/` directory and writes SARIF output there. It must fail clearly when the executable is missing or analysis fails. A shared SARIF-checking helper fails when the result set contains a configured finding, so a clean exit from database analysis cannot hide findings.
 
-The CI job uses the same configuration through the pinned CodeQL GitHub Action, retains its SARIF output, and invokes the shared SARIF checker before uploading or publishing the result. Local and CI scope must remain equivalent even though the database creation mechanisms differ.
+The CI job uses the same configuration through the pinned CodeQL GitHub Action, retains its SARIF output, and invokes the shared SARIF checker before publishing the result. The job publishes findings through its own job log rather than uploading SARIF to code scanning, because this repository runs GitHub default CodeQL setup and GitHub refuses CodeQL analyses from advanced configurations while default setup is enabled. Local and CI scope must remain equivalent even though the database creation mechanisms differ.
 
 ## 7. Mutation testing
 
