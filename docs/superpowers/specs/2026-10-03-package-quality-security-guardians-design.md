@@ -1,7 +1,7 @@
 # Package Quality and Security Guardians Design
 
 **Date:** 2026-10-03  
-**Status:** Design approved conversationally; awaiting written-spec review  
+**Status:** Approved; implementation in progress
 **Scope:** All public extension packages under `packages/`; `sandbox/` is explicitly excluded
 
 ## 1. Goal
