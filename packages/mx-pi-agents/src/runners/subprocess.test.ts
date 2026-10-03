@@ -1,7 +1,8 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { readFileWithStat } from "../../test/fs.js";
 import type { RunPlan } from "../types.js";
 import {
 	buildChildArgv,
@@ -106,7 +107,8 @@ describe("writeSystemPromptFile", () => {
 	it("writes 0600 inside a 0700 dir and sanitizes the name", () => {
 		const written = writeSystemPromptFile("../../evil/name", "prompt");
 		try {
-			expect(statSync(written.path).mode & 0o777).toBe(0o600);
+			const { content, stats } = readFileWithStat(written.path);
+			expect(stats.mode & 0o777).toBe(0o600);
 			expect(statSync(written.dir).mode & 0o777).toBe(0o700);
 			// Traversal characters are neutralized; the dir stays a direct child of tmpdir.
 			expect(written.dir).not.toContain("..");
@@ -114,7 +116,7 @@ describe("writeSystemPromptFile", () => {
 			// The remainder after the tmpdir prefix is a single path segment.
 			const relative = written.dir.slice(tmpdir().length).replace(/^\//, "");
 			expect(relative).not.toContain("/");
-			expect(readFileSync(written.path, "utf8")).toBe("prompt");
+			expect(content).toBe("prompt");
 		} finally {
 			rmSync(written.dir, { recursive: true, force: true });
 		}
@@ -416,9 +418,10 @@ describe("subprocess: boundary hardening", () => {
 	it("writeSystemPromptFile writes a 0600 file in a fresh 0700 dir", () => {
 		const { dir, path } = writeSystemPromptFile("evil\u0007name", "PROMPT");
 		try {
+			const { content, stats } = readFileWithStat(path);
 			expect(statSync(dir).mode & 0o777).toBe(0o700);
-			expect(statSync(path).mode & 0o777).toBe(0o600);
-			expect(readFileSync(path, "utf8")).toBe("PROMPT");
+			expect(stats.mode & 0o777).toBe(0o600);
+			expect(content).toBe("PROMPT");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

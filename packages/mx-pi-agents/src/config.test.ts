@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { readFileWithStat } from "../test/fs.js";
 import {
 	APPROVAL_MAX_AGE_MS,
 	CONFIG_FILE_NAME,
@@ -429,8 +430,9 @@ describe("config: boundary hardening", () => {
 	it("config store round-trips and resolves paths against the extensions dir", () => {
 		const store = createConfigStore(agentDir);
 		store.save({ ...defaultConfig(), agentPaths: ["a"], scope: ["b"] });
-		expect(statSync(store.path).isFile()).toBe(true);
-		expect(readFileSync(store.path, "utf8").endsWith("\n")).toBe(true);
+		const { content, stats } = readFileWithStat(store.path);
+		expect(stats.isFile()).toBe(true);
+		expect(content.endsWith("\n")).toBe(true);
 		const loaded = store.load().config;
 		expect(loaded.agentPaths).toEqual([join(agentDir, "extensions", "a")]);
 		expect(loaded.scope).toEqual([join(agentDir, "extensions", "b")]);

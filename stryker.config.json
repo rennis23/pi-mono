@@ -11,9 +11,10 @@
 		"prioritizePerformanceOverAccuracy": true
 	},
 	"mutate": [
-		"packages/mx-pi-agents/index.ts",
-		"packages/mx-pi-agents/src/**/*.ts",
-		"!packages/mx-pi-agents/src/**/*.test.ts",
+		"packages/*/index.ts",
+		"packages/*/src/**/*.ts",
+		"!packages/*/**/*.test.ts",
+		"!packages/*/test/**",
 		"!sandbox/**"
 	],
 	"ignorePatterns": ["/sandbox"],

@@ -9,9 +9,11 @@ pi-mono/
 ├── packages/          # Workspace packages
 │   ├── mx-pi-agents/        # Secure agent registry and subagent runner
 │   └── mx-pi-context-stats/ # Context/token/cost stats widget
-├── scripts/           # Version sync and release helpers
+├── scripts/           # Release, security, and mutation helpers
 ├── test/              # Shared test setup
+├── .github/           # Pull-request CI and CodeQL configuration
 ├── package.json       # Workspace root
+├── SECURITY.md        # Repository security policy
 ├── tsconfig.base.json # Shared TypeScript config
 ├── biome.json         # Shared formatter/linter config
 └── vitest.config.ts   # Shared test runner
@@ -25,14 +27,16 @@ Requires Node.js 22+ and npm 11+.
 npm install
 npm run check   # biome + tsc
 npm test        # vitest
+npm run security # package policy + audit + local CodeQL
 ```
 
 ## Adding a package
 
-1. Create `packages/pi-<name>/`.
-2. Add a `package.json` with `"name": "@rennis23/pi-<name>"` and a `pi.extensions` entry pointing to the extension file.
+1. Create `packages/mx-pi-<name>/`.
+2. Add a public `package.json` named `@rennis23/mx-pi-<name>` with a `pi.extensions` entry and explicit `files` allowlist.
 3. Add an `index.ts` that exports a default extension factory.
-4. Add tests next to the source files (`*.test.ts`).
+4. Add `README.md`, `LICENSE`, `CHANGELOG.md`, and `SECURITY.md`.
+5. Add tests next to the source files (`*.test.ts`).
 
 ## Releasing
 
@@ -47,10 +51,10 @@ npm run release:major
 ## Mutation testing
 
 Stryker mutation testing is configured at the repo root (`stryker.config.json`)
-and scoped to `packages/mx-pi-agents`.
+and covers `packages/` (`sandbox/` is excluded).
 
 ```bash
-npm run mutation             # full run (slow, ~22 min)
+npm run mutation             # full run (slow)
 npm run mutation:changed     # only files changed vs HEAD (fast local feedback)
 npm run mutation:changed -- master
 npm run mutation:changed -- HEAD --list   # print the mutate list, run nothing
@@ -62,7 +66,16 @@ untracked files) and takes any git ref as its first argument. When no mutable
 source file changed it exits 0 without invoking Stryker. Unknown flags are
 passed through to `stryker run`, e.g. `npm run mutation:changed -- --ignoreStatic`.
 
+## Quality and security guardians
+
+- `npm run security:packages` validates every public package and its actual npm tarball contents.
+- `npm run security:audit` blocks high and critical production dependency advisories.
+- `npm run security:codeql` runs local CodeQL `security-extended` analysis and fails on SARIF findings.
+- `npm run mutation:changed` runs Stryker only for changed package source; pass a base ref in CI when needed.
+- All quality and security package analysis covers `packages/` and explicitly excludes `sandbox/`.
+- The pull-request workflow defines separate quality, package-security, mutation, CodeQL, and dependency-review jobs. Configure them as required checks in GitHub branch protection.
+
 ## Husky hooks
 
 - `pre-commit` runs formatting, linting, and type checking.
-- `pre-push` runs the test suite and the full `npm run mutation` gate.
+- `pre-push` runs tests, package policy, dependency audit, changed-source mutation, and local CodeQL when installed.

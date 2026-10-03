@@ -8,7 +8,7 @@
  * would silently drop approvals.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { isPathContained } from "./security.js";
@@ -231,26 +231,32 @@ export function createConfigStore(agentDir?: string): ConfigStore {
 
 		load() {
 			const diagnostics: AgentDiagnostic[] = [];
-			if (!existsSync(path)) return { config: defaultConfig(), diagnostics };
+			// Open once and stat/read through the same descriptor so a concurrent
+			// replace cannot slip between an existence check and the read (TOCTOU).
+			let fd: number | undefined;
 			try {
-				const stats = statSync(path);
+				fd = openSync(path, "r");
+				const stats = fstatSync(fd);
 				if (!stats.isFile()) {
 					diagnostics.push({ level: "warning", message: `${path} is not a regular file; using defaults`, path });
 					return { config: defaultConfig(), diagnostics };
 				}
-				const raw = JSON.parse(readFileSync(path, "utf8"));
+				const raw = JSON.parse(readFileSync(fd, "utf8"));
 				const config = parseConfig(raw, diagnostics);
 				const baseDir = dirname(path);
 				config.agentPaths = config.agentPaths.map((entry) => resolveAgentPath(entry, baseDir));
 				config.scope = config.scope?.map((entry) => resolveAgentPath(entry, baseDir));
 				return { config, diagnostics };
 			} catch (err) {
+				if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return { config: defaultConfig(), diagnostics };
 				diagnostics.push({
 					level: "warning",
 					message: `could not read ${path} (${err instanceof Error ? err.message : String(err)}); using defaults`,
 					path,
 				});
 				return { config: defaultConfig(), diagnostics };
+			} finally {
+				if (fd !== undefined) closeSync(fd);
 			}
 		},
 

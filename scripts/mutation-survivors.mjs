@@ -1,66 +1,94 @@
 #!/usr/bin/env node
-/**
- * Print the survived / no-coverage mutants from the latest Stryker JSON report.
- *
- * Usage:
- *   node scripts/mutation-survivors.mjs [file-substring] [report-path]
- *
- * With no arguments it prints a per-file gap summary. With a substring it
- * prints one line per mutant in every matching file, so tests can be written
- * against specific lines.
- */
+/** Print survived and uncovered mutants from the latest Stryker JSON report. */
 import { readFileSync } from "node:fs";
+import { relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const target = process.argv[2];
-const reportPath = process.argv[3] ?? "reports/mutation/mutation.json";
-
-let report;
-try {
-	report = JSON.parse(readFileSync(reportPath, "utf8"));
-} catch (error) {
-	console.error(`Cannot read Stryker report at ${reportPath}: ${error.message}`);
-	console.error("Run `npm run mutation` first.");
-	process.exit(1);
-}
-
+const DEFAULT_REPORT = "reports/mutation/mutation.json";
 const STATUS_SHORT = { Survived: "S", NoCoverage: "N" };
-const statusLabel = (status) => STATUS_SHORT[status] ?? "?";
 
-if (!target) {
-	const rows = [];
-	for (const [file, data] of Object.entries(report.files)) {
-		const survived = data.mutants.filter((m) => m.status === "Survived").length;
-		const noCoverage = data.mutants.filter((m) => m.status === "NoCoverage").length;
-		const killed = data.mutants.filter((m) => m.status === "Killed").length;
-		if (survived + noCoverage > 0) {
-			rows.push({ file: file.replace("packages/mx-pi-agents/", ""), killed, survived, noCoverage });
-		}
+export function readMutationReport(reportPath = DEFAULT_REPORT) {
+	try {
+		return JSON.parse(readFileSync(reportPath, "utf8"));
+	} catch (error) {
+		throw new Error(`Cannot read Stryker report at ${reportPath}: ${error.message}`);
 	}
-	rows.sort((a, b) => b.survived + b.noCoverage - (a.survived + a.noCoverage));
-	console.log("gap  survived  noCov  killed  file");
-	for (const row of rows) {
-		console.log(
-			`${String(row.survived + row.noCoverage).padStart(4)}  ${String(row.survived).padStart(8)}  ${String(
-				row.noCoverage,
-			).padStart(5)}  ${String(row.killed).padStart(6)}  ${row.file}`,
-		);
-	}
-	process.exit(0);
 }
 
-let printed = false;
-for (const [file, data] of Object.entries(report.files)) {
-	if (!file.includes(target)) continue;
-	const rows = data.mutants
-		.filter((m) => m.status === "Survived" || m.status === "NoCoverage")
-		.sort((a, b) => a.location.start.line - b.location.start.line);
-	if (rows.length === 0) continue;
-	printed = true;
-	console.log(`\n### ${file.replace("packages/mx-pi-agents/", "")}  (gap ${rows.length})`);
-	for (const m of rows) {
-		const line = String(m.location.start.line).padStart(4);
-		const replacement = JSON.stringify(m.replacement).slice(0, 100);
-		console.log(`${statusLabel(m.status)} L${line} ${m.mutatorName.padEnd(20)} => ${replacement}`);
+function displayPath(file) {
+	return relative(process.cwd(), resolve(file)) || file;
+}
+
+export function gapRows(report, target) {
+	return Object.entries(report.files ?? {})
+		.filter(([file]) => !target || file.includes(target))
+		.flatMap(([file, data]) => {
+			const mutants = (data.mutants ?? [])
+				.filter((mutant) => mutant.status === "Survived" || mutant.status === "NoCoverage")
+				.sort((left, right) => left.location.start.line - right.location.start.line);
+			return mutants.length === 0 ? [] : [{ file: displayPath(file), mutants }];
+		});
+}
+
+export function formatSummary(report) {
+	const rows = Object.entries(report.files ?? [])
+		.map(([file, data]) => {
+			const mutants = data.mutants ?? [];
+			const survived = mutants.filter((mutant) => mutant.status === "Survived").length;
+			const noCoverage = mutants.filter((mutant) => mutant.status === "NoCoverage").length;
+			const killed = mutants.filter((mutant) => mutant.status === "Killed").length;
+			return { file: displayPath(file), killed, survived, noCoverage };
+		})
+		.filter((row) => row.survived + row.noCoverage > 0)
+		.sort((left, right) => right.survived + right.noCoverage - (left.survived + left.noCoverage));
+
+	return [
+		"gap  survived  noCov  killed  file",
+		...rows.map(
+			(row) =>
+				`${String(row.survived + row.noCoverage).padStart(4)}  ${String(row.survived).padStart(8)}  ${String(
+					row.noCoverage,
+				).padStart(5)}  ${String(row.killed).padStart(6)}  ${row.file}`,
+		),
+	].join("\n");
+}
+
+export function formatDetails(report, target) {
+	const rows = gapRows(report, target);
+	if (rows.length === 0) return `No survivors or uncovered mutants matching "${target}".`;
+
+	return rows
+		.map(({ file, mutants }) => {
+			const lines = mutants.map((mutant) => {
+				const line = String(mutant.location.start.line).padStart(4);
+				const replacement = JSON.stringify(mutant.replacement).slice(0, 100);
+				return `${STATUS_SHORT[mutant.status] ?? "?"} L${line} ${mutant.mutatorName.padEnd(20)} => ${replacement}`;
+			});
+			return [`\n### ${file}  (gap ${mutants.length})`, ...lines].join("\n");
+		})
+		.join("\n");
+}
+
+function main() {
+	const target = process.argv[2];
+	const reportPath = process.argv[3] ?? DEFAULT_REPORT;
+	const report = readMutationReport(reportPath);
+	console.log(target ? formatDetails(report, target) : formatSummary(report));
+}
+
+function isMainModule() {
+	try {
+		return process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+	} catch {
+		return false;
 	}
 }
-if (!printed) console.log(`No survivors or uncovered mutants matching "${target}".`);
+
+if (isMainModule()) {
+	try {
+		main();
+	} catch (error) {
+		console.error(error.message);
+		process.exitCode = 1;
+	}
+}

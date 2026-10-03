@@ -21,17 +21,20 @@ Known follow-ups (release-script hardening, husky nits) are tracked in [TODO.md]
 
 ## Commands
 
-| Command                      | Purpose                                    |
-| ---------------------------- | ------------------------------------------ |
-| `npm run check`              | Format, lint (Biome), and type-check (tsc) |
-| `npm test`                   | Run all tests                              |
-| `npm run coverage`           | Run tests with V8 coverage                 |
-| `npm run mutation`           | Full Stryker run (slow)                    |
-| `npm run mutation:changed`   | Stryker on changed files only              |
-| `npm run mutation:survivors` | List survivors from last report            |
-| `npm run release:patch`      | Bump patch version across all packages     |
-| `npm run release:minor`      | Bump minor version across all packages     |
-| `npm run release:major`      | Bump major version across all packages     |
+| Command                       | Purpose                                     |
+| ----------------------------- | ------------------------------------------- |
+| `npm run check`               | Format, lint (Biome), and type-check (tsc)  |
+| `npm test`                    | Run all tests                               |
+| `npm run coverage`            | Run tests with V8 coverage                  |
+| `npm run security`            | Run package, dependency, and CodeQL checks  |
+| `npm run security:packages`   | Validate public package artifacts           |
+| `npm run security:codeql`     | Run local CodeQL and SARIF gate             |
+| `npm run mutation`            | Full Stryker run (slow)                     |
+| `npm run mutation:changed`    | Mutate changed package source only          |
+| `npm run mutation:survivors`  | Report mutation gaps from last report       |
+| `npm run release:patch`       | Bump patch version across all packages      |
+| `npm run release:minor`       | Bump minor version across all packages      |
+| `npm run release:major`       | Bump major version across all packages      |
 
 Run a single test:
 
@@ -58,10 +61,11 @@ pi-mono/
 │       ├── src/       # pure logic, no pi types (one .test.ts per file)
 │       └── test/      # harness.ts — fake pi API for end-to-end tests
 ├── sandbox/           # smolvm micro-VM runtime assets (NOT an npm package)
-├── scripts/           # sync-versions.js, release.mjs
+├── scripts/           # release, security, and mutation helpers
 ├── test/              # Shared test setup (setup.ts)
 ├── docs/              # Design docs (smolvm-sandbox.md, superpowers/specs|plans)
 ├── .husky/            # pre-commit / pre-push hooks
+├── .github/           # Pull-request CI and CodeQL configuration
 ├── biome.json         # Shared formatter/linter config
 ├── tsconfig.base.json # Shared TypeScript config
 └── vitest.config.ts   # Shared test runner config
@@ -77,6 +81,7 @@ Biome is the single source of truth for formatting and linting. Key settings (se
 - **`noNonNullAssertion`:** off — `!` assertions are allowed
 - **`useConst`:** error — always prefer `const`
 - **Imports:** ESM — relative imports always carry an explicit `.js` extension even though the source is `.ts` (e.g. `from "./src/config.js"`); type-only imports use `import type`; Node builtins use the `node:` prefix
+- **Repository scope:** quality and security tooling covers `packages/` and explicitly excludes `sandbox/`
 
 Run `npm run check` to auto-fix formatting and lint issues (`biome check --write`).
 
@@ -168,6 +173,18 @@ export default function myExtension(pi: ExtensionAPI) {
 - Shared setup lives in `test/setup.ts`
 - Vitest is configured with `clearMocks`, `restoreMocks`, and `unstubGlobals`
 - Coverage excludes `node_modules`, `dist`, `.pi`, `*.test.ts`, `*.d.ts`, and `packages/*/test/**` (shared harness helpers)
+- Root script tests use `scripts/**/*.test.mjs`; package coverage remains scoped to `packages/`
+- Package artifacts are checked with `npm run security:packages`; tests and harnesses must not ship
+
+### Security and mutation testing
+
+- `npm run security:packages` validates every direct workspace under `packages/`, including its `npm pack --dry-run` contents.
+- `npm run security:audit` blocks high and critical production dependency advisories.
+- `npm run security:codeql` uses the local CodeQL CLI with `security-extended` queries and fails on SARIF findings. The local pre-push hook skips this one check only when the CLI is unavailable; CI remains authoritative.
+- The CodeQL command honours `CODEQL_BIN` when the CLI is not on `PATH`. `github/codeql-action/init` does not put its bundled CLI on `PATH`, so the CI job passes that step's `codeql-path` output into the script as `CODEQL_BIN`.
+- The CI CodeQL job does not upload SARIF. This repository runs GitHub's default CodeQL setup, and GitHub rejects CodeQL analyses from advanced configurations while default setup is enabled. The job still fails on findings because the shared SARIF gate runs before publication.
+- `npm run mutation:changed` compares package source against `HEAD` locally or an explicit PR base SHA in CI. It skips tests, reports, generated files, and `sandbox/`.
+- Full mutation testing is available with `npm run mutation`, but changed-source mutation is the mandatory PR/local gate.
 
 ### Versioning
 
@@ -176,4 +193,6 @@ All packages share the same version. Use the `release:*` scripts — never bump 
 ## Git hooks
 
 - **pre-commit:** runs `npm run check` (Biome format + lint + tsc)
-- **pre-push:** runs `npm test`
+- **pre-push:** runs tests, package policy, dependency audit, changed-source mutation, and local CodeQL when installed.
+
+PR CI defines separate required quality, package-security, mutation, CodeQL, and dependency-review jobs. Configure those job names as required checks in GitHub branch protection.

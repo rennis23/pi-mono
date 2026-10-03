@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Repository publication and security-policy documentation.
 - Per-prompt context, token, cost and subagent stats widget rendered below (or
   above) the editor, plus a single status line on pi's built-in footer showing
   live tok/s, prompt duration and context usage. pi's native footer is never

@@ -31,9 +31,11 @@
 	"files": [
 		"index.ts",
 		"src/**/*.ts",
+		"!src/**/*.test.ts",
 		"agents/**/*.md",
 		"README.md",
 		"SECURITY.md",
+		"CHANGELOG.md",
 		"LICENSE"
 	],
 	"pi": {
