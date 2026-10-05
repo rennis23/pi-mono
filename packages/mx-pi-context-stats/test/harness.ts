@@ -1,9 +1,9 @@
 /**
  * Test doubles for the pi extension API.
  *
- * The extension only touches a handful of pi surfaces (`pi.on`, `pi.register*`,
- * `ctx.ui.setStatus/setWidget/notify`, `ctx.getContextUsage`), so a small fake is
- * enough to drive it end to end without a TUI.
+ * This harness models multiple lifecycle handlers per event (the settings SDK
+ * and extension both subscribe to `session_start`) and the shared synchronous
+ * extension event bus used by mx-pi-settings.
  */
 
 import type {
@@ -25,6 +25,7 @@ export interface CommandDef {
 }
 
 type AnyHandler = (event: any, ctx: any) => unknown;
+type EventBusHandler = (data: unknown) => void;
 
 export interface HarnessOptions {
 	contextWindow?: number;
@@ -35,10 +36,23 @@ export interface HarnessOptions {
 }
 
 export function createHarness(options: HarnessOptions = {}) {
-	const handlers = new Map<string, AnyHandler>();
+	const handlers = new Map<string, AnyHandler[]>();
 	const commands = new Map<string, CommandDef>();
 	const flags = new Map<string, any>();
 	const flagValues = new Map<string, boolean | string>();
+	const eventListeners = new Map<string, Set<EventBusHandler>>();
+
+	const events = {
+		emit(channel: string, data: unknown) {
+			for (const listener of eventListeners.get(channel) ?? []) listener(data);
+		},
+		on(channel: string, listener: EventBusHandler) {
+			const listeners = eventListeners.get(channel) ?? new Set<EventBusHandler>();
+			listeners.add(listener);
+			eventListeners.set(channel, listeners);
+			return () => listeners.delete(listener);
+		},
+	};
 
 	const ui = {
 		setStatus: vi.fn(),
@@ -60,8 +74,17 @@ export function createHarness(options: HarnessOptions = {}) {
 	} as unknown as ExtensionContext;
 
 	const pi = {
+		events,
 		on: (event: string, handler: AnyHandler) => {
-			handlers.set(event, handler);
+			const listeners = handlers.get(event) ?? [];
+			listeners.push(handler);
+			handlers.set(event, listeners);
+			return () => {
+				handlers.set(
+					event,
+					(handlers.get(event) ?? []).filter((item) => item !== handler),
+				);
+			};
 		},
 		registerCommand: (name: string, def: CommandDef) => {
 			commands.set(name, def);
@@ -89,19 +112,20 @@ export function createHarness(options: HarnessOptions = {}) {
 		commands,
 		flags,
 		flagValues,
+		events,
 		widgetFactory,
 
-		/** Invoke a registered event handler with the shared mock ctx. */
+		/** Invoke lifecycle handlers in registration order with the shared mock ctx. */
 		emit: async (event: string, payload: any = {}) => {
-			const handler = handlers.get(event);
-			if (!handler) throw new Error(`no handler registered for "${event}"`);
-			await handler(payload, ctx);
+			const listeners = handlers.get(event) ?? [];
+			if (listeners.length === 0) throw new Error(`no handler registered for "${event}"`);
+			for (const handler of listeners) await handler(payload, ctx);
 		},
 
-		/** Invoke the registered `/mx-pi-settings` handler. */
+		/** Invoke the registered context-stats summary command. */
 		runCommand: async (args: string) => {
-			const def = commands.get("mx-pi-settings");
-			if (!def) throw new Error("mx-pi-settings command was not registered");
+			const def = commands.get("mx-pi-context-stats");
+			if (!def) throw new Error("mx-pi-context-stats command was not registered");
 			await def.handler(args, ctx as unknown as ExtensionCommandContext);
 		},
 
