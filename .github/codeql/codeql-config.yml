@@ -1,0 +1,10 @@
+name: pi-mono
+queries:
+  - uses: security-extended
+paths:
+  - packages
+paths-ignore:
+  - sandbox/**
+  - .codeql/**
+  - .stryker-tmp/**
+  - reports/**

@@ -33,7 +33,10 @@
 			"vitest.config.ts",
 			"!**/node_modules",
 			"!**/.pi",
-			"!**/dist"
+			"!**/dist",
+			"!**/.codeql",
+			"!**/.stryker-tmp",
+			"!**/reports"
 		]
 	}
 }

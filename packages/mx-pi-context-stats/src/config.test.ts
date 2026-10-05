@@ -39,9 +39,9 @@ describe("resolve", () => {
 		expect(createConfigStore(path).resolve()).toEqual(DEFAULT_OPTIONS);
 	});
 
-	it("returns defaults when the file is not an object", () => {
+	it.each(["[1, 2, 3]", "null", '"text"'])("returns defaults when the file is not an object: %s", (content) => {
 		mkdirSync(join(dir, "extensions"), { recursive: true });
-		writeFileSync(path, "[1, 2, 3]", "utf8");
+		writeFileSync(path, content, "utf8");
 		expect(createConfigStore(path).resolve()).toEqual(DEFAULT_OPTIONS);
 	});
 
@@ -49,7 +49,7 @@ describe("resolve", () => {
 		mkdirSync(join(dir, "extensions"), { recursive: true });
 		writeFileSync(
 			path,
-			JSON.stringify({ historyRows: 9, visible: false, placement: "aboveEditor", showHealth: false }),
+			JSON.stringify({ historyRows: "9", visible: false, placement: "aboveEditor", showHealth: false }),
 			"utf8",
 		);
 		const resolved = createConfigStore(path).resolve();
@@ -65,6 +65,12 @@ describe("resolve", () => {
 		mkdirSync(join(dir, "extensions"), { recursive: true });
 		writeFileSync(path, JSON.stringify({ historyRows: 9999 }), "utf8");
 		expect(createConfigStore(path).resolve().historyRows).toBe(HISTORY_ROWS_MAX);
+	});
+
+	it("ignores values with unsupported types", () => {
+		mkdirSync(join(dir, "extensions"), { recursive: true });
+		writeFileSync(path, JSON.stringify({ historyRows: true, showHealth: "false", placement: null }), "utf8");
+		expect(createConfigStore(path).resolve()).toEqual(DEFAULT_OPTIONS);
 	});
 
 	it("drops an invalid placement rather than rendering an unknown value", () => {
@@ -87,7 +93,9 @@ describe("save", () => {
 		const store = createConfigStore(path);
 		const options = { ...DEFAULT_OPTIONS, historyRows: 12 };
 		store.save(options);
-		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(options);
+		const saved = readFileSync(path, "utf8");
+		expect(JSON.parse(saved)).toEqual(options);
+		expect(saved).toContain('\n\t"historyRows": 12');
 	});
 
 	it("round-trips through resolve", () => {
