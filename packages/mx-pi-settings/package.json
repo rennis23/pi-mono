@@ -1,15 +1,13 @@
 {
-	"name": "@rennis23/mx-pi-context-stats",
+	"name": "@rennis23/mx-pi-settings",
 	"version": "0.1.0",
-	"description": "Pi extension. Per-prompt context, token, cost and subagent stats in a below-editor widget and a footer status line.",
+	"description": "Pi extension. Central settings hub every mx-pi extension can register its own options with, edited from one TUI screen and one config file.",
 	"keywords": [
 		"pi-package",
 		"pi-extension",
-		"context",
-		"tokens",
-		"usage",
-		"cost",
-		"subagent"
+		"settings",
+		"configuration",
+		"tui"
 	],
 	"type": "module",
 	"license": "MIT",
@@ -17,9 +15,9 @@
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/rennis23/pi-mono.git",
-		"directory": "packages/mx-pi-context-stats"
+		"directory": "packages/mx-pi-settings"
 	},
-	"homepage": "https://github.com/rennis23/pi-mono/tree/master/packages/mx-pi-context-stats#readme",
+	"homepage": "https://github.com/rennis23/pi-mono/tree/master/packages/mx-pi-settings#readme",
 	"bugs": {
 		"url": "https://github.com/rennis23/pi-mono/issues"
 	},
@@ -31,20 +29,33 @@
 	},
 	"files": [
 		"index.ts",
+		"sdk.ts",
 		"src/**/*.ts",
 		"!src/**/*.test.ts",
+		"!test/**",
 		"README.md",
 		"LICENSE",
 		"CHANGELOG.md",
 		"SECURITY.md"
 	],
+	"exports": {
+		".": {
+			"types": "./sdk.ts",
+			"default": "./sdk.ts"
+		},
+		"./sdk": {
+			"types": "./sdk.ts",
+			"default": "./sdk.ts"
+		},
+		"./extension": {
+			"types": "./index.ts",
+			"default": "./index.ts"
+		}
+	},
 	"pi": {
 		"extensions": [
 			"./index.ts"
 		]
-	},
-	"dependencies": {
-		"@rennis23/mx-pi-settings": "^0.1.0"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": ">=0.80.0",

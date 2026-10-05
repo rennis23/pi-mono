@@ -42,50 +42,35 @@ Requires pi ≥ 0.80 and Node.js 22+.
 
 | Command | Effect |
 | --- | --- |
-| `/mx-pi-settings` | Open the interactive settings picker (shows current values) |
-| `/mx-pi-settings toggle` | Show/hide the widget |
-| `/mx-pi-settings summary` | Print session totals, current context and subagent rollup |
-| `/mx-pi-settings rows <n>` | History rows kept (1–20) |
-| `/mx-pi-settings subagent-rows <n>` | Max subagent rows rendered (0–20) |
-| `/mx-pi-settings subagents on\|off` | Show/hide the subagent section |
-| `/mx-pi-settings health on\|off` | Show/hide burn rate, projection and cache cells |
-| `/mx-pi-settings placement above\|below` | Move the widget above or below the editor |
-| `/mx-pi-settings reset` | Clear the prompt history (session data only) |
+| `/mx-pi-context-stats` | Print session totals, current context and subagent rollup |
 
-In interactive sessions a bare `/mx-pi-settings` opens a picker listing every
-option with its current value; in print/JSON mode it reports the values as text
-instead. Option changes are **persisted** to the config file below and apply to
-future sessions too. `summary` and `reset` never touch the config.
+Configure the widget through the central [`mx-pi-settings` hub](../mx-pi-settings/README.md):
+`/mx-pi-settings` opens the searchable extension settings overlay, where you can
+change history rows (1–20), subagent rows (0–20), section visibility, health
+metrics, and widget placement. The hub persists those registered values for
+future sessions. This extension does not maintain its own settings command or
+config file.
 
 ## Configuration
 
-Options are durable JSON at `~/.pi/agent/extensions/mx-pi-context-stats.json`
-(respects `PI_CODING_AGENT_DIR`). The file is created on the first change from
-`/mx-pi-settings`, but can be hand-written; every key is optional:
+Registered options are stored in the central file
+`~/.pi/agent/extensions/mx-pi-settings.json` (respects `PI_CODING_AGENT_DIR`)
+under the `mx-pi-context-stats` namespace. Configure values using the hub or
+its `/mx-pi-settings set mx-pi-context-stats.<key> <value>` command. The file
+is JSON and can also be edited directly; the settings hub validates values
+against the provider's field spec before using them.
 
-```json
-{
- "historyRows": 5,
- "subagentRows": 4,
- "maxWidgetLines": 10,
- "showSubagents": true,
- "showHealth": true,
- "visible": true,
- "placement": "belowEditor",
- "subagentToolNames": ["spawn_subagent"]
-}
-```
-
-Out-of-range numbers are clamped and invalid values ignored, so a malformed
-file can never break the widget.
+`maxWidgetLines` and `subagentToolNames` are internal runtime defaults rather
+than registered user settings; the defaults are 10 and `["spawn_subagent"]`.
 
 ## CLI flags
 
-Per-run overrides that win over the config file without persisting:
+The central hub provides run-scoped overrides, which win over persisted values
+without writing them back:
 
 ```bash
-pi --mx-pi-context-stats-rows 10 -p "explain recursion"
-pi --mx-pi-context-stats-hide -p "just the answer"
+pi --mx-pi-settings-set 'mx-pi-context-stats.historyRows=10' -p "explain recursion"
+pi --mx-pi-settings-set 'mx-pi-context-stats.visible=false' -p "just the answer"
 ```
 
 ## Subagent support
@@ -106,10 +91,11 @@ npm test        # vitest
 
 ## Security
 
-The extension runs inside the pi host process and writes only its own config
-file under the active pi agent directory. It does not provide process
-sandboxing or authenticate other local writers. See [SECURITY.md](./SECURITY.md)
-for the threat model, enforced controls, residual risks, and reporting route.
+The extension runs inside the pi host process and uses the central settings
+hub's shared config file under the active pi agent directory. It does not provide
+process sandboxing or authenticate other local writers. See
+[SECURITY.md](./SECURITY.md) for the threat model, enforced controls, residual
+risks, and reporting route.
 
 ## License
 
