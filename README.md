@@ -7,6 +7,7 @@ npm workspaces monorepo for [pi.dev](https://pi.dev) extensions.
 ```
 pi-mono/
 ├── packages/          # Workspace packages
+│   ├── mx-pi-agents/        # Main-session persona switching
 │   ├── mx-pi-context-stats/ # Context/token/cost stats widget
 │   └── mx-pi-settings/      # Central settings hub + SDK for mx-pi extensions
 ├── scripts/           # Release, security, and mutation helpers
