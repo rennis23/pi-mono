@@ -64,9 +64,10 @@ export function approvalMatches(entry: ApprovalEntry | undefined, hash: string):
 
 /** One-line statement of what a gated definition would change in the main session. */
 function mainPromptConsequence(agent: PinnedAgent): string | undefined {
-	if (agent.definition.kind !== "persona" && agent.definition.kind !== "main") return undefined;
+	if (agent.definition.subAgentOnly) return undefined;
 	const name = sanitizeUiText(agent.definition.name, 64);
-	return `"${name}" [${agent.definition.kind}] can ${agent.definition.kind === "persona" ? "replace" : "extend"} the main system prompt and change tools, model and thinking for this session.`;
+	const mode = agent.definition.systemPrompt;
+	return `"${name}" [${mode}] can ${mode === "replace" ? "replace" : "extend"} the main system prompt and change tools, model and thinking for this session.`;
 }
 
 /** Build the request shown to the operator, or used in a headless refusal. */
@@ -78,7 +79,7 @@ export function approvalRequest(agent: PinnedAgent): ApprovalRequest {
 	const tools = agent.definition.tools ? sanitizeUiText(agent.definition.tools.join(", "), 200) : "(inherit rules)";
 	const lines = [
 		`Agent: ${name}`,
-		`Kind: ${agent.definition.kind}`,
+		`System prompt: ${agent.definition.systemPrompt}${agent.definition.mainAgentOnly ? " (main-session only)" : ""}${agent.definition.subAgentOnly ? " (sub-agent only)" : ""}`,
 		`Description: ${description}`,
 		`Source: ${agent.source.kind} — ${sanitizeUiText(agent.source.path, 200)}`,
 		`Hash: ${agent.hash.slice(0, 12)}`,

@@ -19,7 +19,9 @@ function makeAgent(kind: SourceKind, name = "reviewer", hash = HASH): PinnedAgen
 	const definition: AgentDefinition = {
 		name,
 		description: `${name} description`,
-		kind: "main",
+		systemPrompt: "append",
+		subAgentOnly: false,
+		mainAgentOnly: false,
 		tools: ["read"],
 		toolsInheritance: "none",
 		scope: undefined,
@@ -230,19 +232,18 @@ describe("trust: boundary hardening", () => {
 		expect(result.diagnostics[0].message).toContain("pruned 2");
 	});
 
-	it("approvalRequest omits the consequence for a sub kind", () => {
+	it("approvalRequest omits the consequence for a sub-only kind", () => {
 		const agent = makeAgent("project", "s");
-		agent.definition.kind = "sub";
+		agent.definition.subAgentOnly = true;
 		expect(approvalRequest(agent).summary).not.toContain("system prompt");
 	});
 
-	it("approvalRequest describes the persona and main consequences", () => {
-		const persona = makeAgent("project", "p");
-		persona.definition.kind = "persona";
-		expect(approvalRequest(persona).summary).toContain("replace the main system prompt");
-		const main = makeAgent("project", "m");
-		main.definition.kind = "main";
-		expect(approvalRequest(main).summary).toContain("extend the main system prompt");
+	it("approvalRequest describes the replace and append consequences", () => {
+		const replaceAgent = makeAgent("project", "p");
+		replaceAgent.definition.systemPrompt = "replace";
+		expect(approvalRequest(replaceAgent).summary).toContain("replace the main system prompt");
+		const appendAgent = makeAgent("project", "m");
+		expect(approvalRequest(appendAgent).summary).toContain("extend the main system prompt");
 	});
 
 	it("approvalRequest notes a sandboxed isolation and inherit rules", () => {
@@ -278,7 +279,7 @@ describe("trust: survivor kills", () => {
 
 	it("lists kind, description, source, tools and the hash prefix", () => {
 		const summary = approvalRequest(makeAgent("project", "reviewer")).summary;
-		expect(summary).toContain("Kind: main");
+		expect(summary).toContain("System prompt: append");
 		expect(summary).toContain("Description: reviewer description");
 		expect(summary).toContain("Source: project — /agents/reviewer.md");
 		expect(summary).toContain(`Hash: ${HASH.slice(0, 12)}`);

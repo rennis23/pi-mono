@@ -23,7 +23,9 @@ function makeAgent(overrides: Partial<AgentDefinition> = {}, kind: SourceKind = 
 	const definition: AgentDefinition = {
 		name: "reviewer",
 		description: "review things",
-		kind: "main",
+		systemPrompt: "append",
+		subAgentOnly: false,
+		mainAgentOnly: false,
 		tools: ["read", "grep"],
 		toolsInheritance: "none",
 		scope: undefined,
@@ -269,11 +271,11 @@ describe("describePlan", () => {
 });
 
 describe("policy: boundary hardening", () => {
-	it("refuses a persona agent before anything else", () => {
-		const outcome = planRun(makeAgent({ kind: "persona" }), "task", context());
+	it("refuses a main-agent-only agent before anything else", () => {
+		const outcome = planRun(makeAgent({ systemPrompt: "replace", mainAgentOnly: true }), "task", context());
 		expect(outcome.ok).toBe(false);
 		if (outcome.ok) return;
-		expect(outcome.refusal.reason).toBe("persona-child");
+		expect(outcome.refusal.reason).toBe("main-agent-only");
 	});
 
 	it("refuses a spawn-capable grant", () => {

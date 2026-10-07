@@ -12,7 +12,14 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseAgentDefinition } from "./schema.js";
 import { sanitizeUiText, sha256Hex } from "./security.js";
-import type { AgentDiagnostic, AgentKind, AgentSource, PinnedAgent, RegistrySnapshot, SourceKind } from "./types.js";
+import type {
+	AgentDiagnostic,
+	AgentSource,
+	PinnedAgent,
+	RegistrySnapshot,
+	SourceKind,
+	SystemPromptMode,
+} from "./types.js";
 
 /** Discovery precedence, lowest to highest. Gated kinds may never shadow trusted ones. */
 export const SOURCE_ORDER: readonly SourceKind[] = ["bundled", "global", "config", "project"];
@@ -160,10 +167,10 @@ export function discoverAgents(dirs: RegistryDirs, now: () => number): Discovery
 				});
 				continue;
 			}
-			if (parsed.definition.kind === "sub" && parsed.definition.delegate) {
+			if (parsed.definition.subAgentOnly && parsed.definition.delegate) {
 				diagnostics.push({
 					level: "warning",
-					message: `delegate is ignored on sub agent "${name}": sub agents never run in the main session`,
+					message: `delegate is ignored on subagent "${name}": sub agents never run in the main session`,
 					path,
 				});
 			}
@@ -283,7 +290,8 @@ export function verifyPinned(agent: PinnedAgent): VerifyResult {
 export interface RosterEntry {
 	name: string;
 	description: string;
-	kind: AgentKind;
+	/** Prompt mode for a main-session switch; `sub` marks a sub-agent-only definition. */
+	kind: SystemPromptMode | "sub";
 	source: SourceKind;
 	path: string;
 	trusted: boolean;
@@ -300,7 +308,7 @@ export function rosterEntries(agents: readonly PinnedAgent[]): RosterEntry[] {
 	return agents.map((agent) => ({
 		name: sanitizeUiText(agent.definition.name, 64),
 		description: sanitizeUiText(agent.definition.description, 120),
-		kind: agent.definition.kind,
+		kind: agent.definition.subAgentOnly ? "sub" : agent.definition.systemPrompt,
 		source: agent.source.kind,
 		path: sanitizeUiText(agent.source.path, 200),
 		trusted: agent.source.trusted,

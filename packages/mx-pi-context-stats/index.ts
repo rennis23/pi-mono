@@ -11,10 +11,8 @@
  * pi's native footer is never replaced; status text is published through
  * `ctx.ui.setStatus`, which the built-in footer renders on its own row.
  *
- * Options are durable: they live in `<agentDir>/extensions/
- * mx-pi-context-stats.json` and are edited through the `/mx-pi-settings`
- * command (interactive picker or scriptable subcommands). CLI flags override
- * the file for a single run without persisting.
+ * User-facing options are registered with `@rennis23/mx-pi-settings`, the
+ * central mx-pi settings hub. Session history remains in memory only.
  *
  * Subagent tracking is opt-in by detection: any tool listed in
  * `options.subagentToolNames` (default `spawn_subagent`) is tracked, and its
@@ -22,11 +20,10 @@
  * subagent section simply never renders — no warnings, no registration.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createConfigStore } from "./src/config.js";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { registerSettings } from "@rennis23/mx-pi-settings";
 import {
 	type ContextStatsOptions,
-	clampInt,
 	DEFAULT_OPTIONS,
 	HISTORY_ROWS_MAX,
 	HISTORY_ROWS_MIN,
@@ -35,40 +32,28 @@ import {
 	withOptions,
 } from "./src/options.js";
 import { createStatsState } from "./src/state.js";
+import type { StatsPlacement } from "./src/types.js";
 import { buildStatusText, buildSummaryText, buildWidgetLines } from "./src/widget.js";
 
 const STATUS_KEY = "mx-pi-context-stats";
 const WIDGET_KEY = "mx-pi-context-stats";
+const COMMAND_USAGE = "Usage: /mx-pi-context-stats [summary]";
 
-const USAGE =
-	"Usage: /mx-pi-settings [toggle|summary|rows <n>|subagent-rows <n>|subagents on|off|health on|off|placement above|below|reset]";
+interface ContextStatsSettings {
+	visible: boolean;
+	historyRows: number;
+	subagentRows: number;
+	showSubagents: boolean;
+	showHealth: boolean;
+	placement: StatsPlacement;
+}
 
 export default function contextStats(pi: ExtensionAPI) {
 	const state = createStatsState({ ...DEFAULT_OPTIONS } as ContextStatsOptions);
-
-	// Durable option store: read on session start, written back by /mx-pi-settings.
-	// The path is resolved when the extension is set up (not at import time), so
-	// PI_CODING_AGENT_DIR overrides take effect.
-	const config = createConfigStore();
-
-	/**
-	 * Apply an options patch and persist the result. Save failures are surfaced
-	 * as a warning but never block the in-session change.
-	 */
-	function updateOptions(ctx: ExtensionContext, patch: Partial<ContextStatsOptions>): void {
-		state.options = withOptions(state.options, patch);
-		try {
-			config.save(state.options);
-		} catch (err) {
-			ctx.ui.notify(
-				`mx-pi-settings: could not save config to ${config.path}: ${err instanceof Error ? err.message : String(err)}`,
-				"warning",
-			);
-		}
-	}
+	let currentCtx: ExtensionContext | undefined;
 
 	// TUI handle captured from the widget factory, used to request redraws when
-	// state changes outside of a render (streaming updates, prompt completion).
+	// state changes outside of a render (streaming updates, settings changes).
 	let widgetTui: { requestRender(): void } | undefined;
 
 	function requestRender(): void {
@@ -119,8 +104,7 @@ export default function contextStats(pi: ExtensionAPI) {
 							});
 						} catch (err) {
 							// Rendered without the theme on purpose: if the theme is
-							// what failed, calling it again would throw out of the
-							// render and take the TUI down with it.
+							// what failed, calling it again would throw out of the render.
 							return [`mx-pi-context-stats widget: ${err instanceof Error ? err.message : String(err)}`];
 						}
 					},
@@ -131,36 +115,80 @@ export default function contextStats(pi: ExtensionAPI) {
 		);
 	}
 
-	/** Apply CLI flag overrides (useful in print/non-interactive mode). */
-	function applyFlags(): void {
-		const rows = pi.getFlag("mx-pi-context-stats-rows");
-		if (rows !== undefined) {
-			state.options = withOptions(state.options, {
-				historyRows: clampInt(rows, HISTORY_ROWS_MIN, HISTORY_ROWS_MAX, state.options.historyRows),
-			});
-		}
-		if (pi.getFlag("mx-pi-context-stats-hide") === true) {
-			state.options = withOptions(state.options, { visible: false });
-		}
-	}
-
-	pi.registerFlag("mx-pi-context-stats-rows", {
-		type: "string",
-		description:
-			"Number of prompt history rows shown by mx-pi-context-stats (overrides the config file for this run)",
-	});
-	pi.registerFlag("mx-pi-context-stats-hide", {
-		type: "boolean",
-		description: "Hide the mx-pi-context-stats widget for this run (overrides the config file)",
+	const settings = registerSettings<ContextStatsSettings>(pi, {
+		id: "mx-pi-context-stats",
+		title: "Context stats",
+		description: "Controls the prompt history and subagent widget.",
+		fields: [
+			{
+				key: "visible",
+				label: "Widget",
+				description: "Show or hide the context stats widget.",
+				type: "boolean",
+				default: DEFAULT_OPTIONS.visible,
+			},
+			{
+				key: "historyRows",
+				label: "History rows",
+				description: "Number of completed prompt rows to retain.",
+				type: "number",
+				default: DEFAULT_OPTIONS.historyRows,
+				min: HISTORY_ROWS_MIN,
+				max: HISTORY_ROWS_MAX,
+				integer: true,
+			},
+			{
+				key: "subagentRows",
+				label: "Subagent rows",
+				description: "Maximum live/completed subagent rows to render.",
+				type: "number",
+				default: DEFAULT_OPTIONS.subagentRows,
+				min: SUBAGENT_ROWS_MIN,
+				max: SUBAGENT_ROWS_MAX,
+				integer: true,
+			},
+			{
+				key: "showSubagents",
+				label: "Subagent section",
+				description: "Show tool progress and usage for detected subagents.",
+				type: "boolean",
+				default: DEFAULT_OPTIONS.showSubagents,
+			},
+			{
+				key: "showHealth",
+				label: "Health metrics",
+				description: "Show burn rate, projection, and cache ratio.",
+				type: "boolean",
+				default: DEFAULT_OPTIONS.showHealth,
+			},
+			{
+				key: "placement",
+				label: "Placement",
+				description: "Choose where the widget appears relative to the editor.",
+				type: "select",
+				default: DEFAULT_OPTIONS.placement,
+				options: [
+					{ value: "aboveEditor", label: "Above editor" },
+					{ value: "belowEditor", label: "Below editor" },
+				],
+			},
+		],
+		onChange(values) {
+			const placementChanged = state.options.placement !== values.placement;
+			state.options = withOptions(state.options, values);
+			if (placementChanged && currentCtx) setupWidget(currentCtx);
+			requestRender();
+		},
 	});
 
 	// ── Lifecycle ────────────────────────────────────────────────────────────
 
 	pi.on("session_start", async (_event, ctx) => {
+		currentCtx = ctx;
 		state.reset(ctx.model?.contextWindow ?? 0);
-		// Durable config file is the source of truth; CLI flags win for this run.
-		state.options = config.resolve({ ...DEFAULT_OPTIONS } as ContextStatsOptions);
-		applyFlags();
+		// The shared SDK reads its central namespace and run flags; projecting it
+		// into this extension's richer runtime options preserves private defaults.
+		state.options = withOptions(state.options, settings.values());
 		setupWidget(ctx);
 		// Also clears any stale status text left by the previous session.
 		updateStatus(ctx);
@@ -234,198 +262,16 @@ export default function contextStats(pi: ExtensionAPI) {
 		requestRender();
 	});
 
-	// ── /mx-pi-settings command ──────────────────────────────────────────────
-
-	/** Current option values as one line, for non-dialog modes and confirmations. */
-	function describeOptions(): string {
-		const o = state.options;
-		return (
-			`visible=${o.visible} historyRows=${o.historyRows} subagentRows=${o.subagentRows} ` +
-			`subagents=${o.showSubagents} health=${o.showHealth} placement=${o.placement}`
-		);
-	}
-
-	/**
-	 * Interactive settings picker. Each row shows the current value; choosing
-	 * one opens a follow-up dialog and persists the result. Returns without
-	 * changing anything when the user dismisses a dialog (Esc).
-	 */
-	async function openSettingsPicker(ctx: ExtensionCommandContext): Promise<void> {
-		const o = state.options;
-		type Choice = { label: string; run: () => Promise<void> };
-
-		const pickBoolean = async (title: string, key: "showSubagents" | "showHealth", on: string, off: string) => {
-			const value = await ctx.ui.select(title, [on, off]);
-			if (value === undefined) return;
-			updateOptions(ctx, { [key]: value === on } as Partial<ContextStatsOptions>);
-			requestRender();
-			ctx.ui.notify(
-				`mx-pi-settings ${key === "showSubagents" ? "subagents" : "health"}: ${value === on ? "on" : "off"}`,
-				"info",
-			);
-		};
-
-		const pickNumber = async (title: string, key: "historyRows" | "subagentRows", min: number, max: number) => {
-			const raw = await ctx.ui.input(title, `${min}-${max}: ${state.options[key]}`);
-			if (raw === undefined) return;
-			updateOptions(ctx, { [key]: clampInt(raw, min, max, state.options[key]) } as Partial<ContextStatsOptions>);
-			requestRender();
-			ctx.ui.notify(`mx-pi-settings ${key}: ${state.options[key]}`, "info");
-		};
-
-		const choices: Choice[] = [
-			{
-				label: `Widget — ${o.visible ? "shown" : "hidden"}`,
-				run: async () => {
-					updateOptions(ctx, { visible: !state.options.visible });
-					requestRender();
-					ctx.ui.notify(`mx-pi-settings widget ${state.options.visible ? "shown" : "hidden"}`, "info");
-				},
-			},
-			{
-				label: `History rows — ${o.historyRows}`,
-				run: () => pickNumber("History rows", "historyRows", HISTORY_ROWS_MIN, HISTORY_ROWS_MAX),
-			},
-			{
-				label: `Subagent rows — ${o.subagentRows}`,
-				run: () => pickNumber("Subagent rows", "subagentRows", SUBAGENT_ROWS_MIN, SUBAGENT_ROWS_MAX),
-			},
-			{
-				label: `Subagent section — ${o.showSubagents ? "on" : "off"}`,
-				run: () => pickBoolean("Subagent section", "showSubagents", "on", "off"),
-			},
-			{
-				label: `Health metrics — ${o.showHealth ? "on" : "off"}`,
-				run: () => pickBoolean("Health metrics", "showHealth", "on", "off"),
-			},
-			{
-				label: `Placement — ${o.placement === "aboveEditor" ? "above editor" : "below editor"}`,
-				run: async () => {
-					const value = await ctx.ui.select("Widget placement", ["below editor", "above editor"]);
-					if (value === undefined) return;
-					// Placement is fixed at registration time, so persist and re-register.
-					updateOptions(ctx, { placement: value === "above editor" ? "aboveEditor" : "belowEditor" });
-					setupWidget(ctx);
-					ctx.ui.notify(`mx-pi-settings placement: ${value}`, "info");
-				},
-			},
-			{
-				label: "Show summary",
-				run: async () => {
-					ctx.ui.notify(buildSummaryText({ history: state.history, subagents: state.subagents }), "info");
-				},
-			},
-			{
-				label: "Clear prompt history",
-				run: async () => {
-					state.clearHistory();
-					requestRender();
-					ctx.ui.notify("mx-pi-settings history cleared", "info");
-				},
-			},
-		];
-
-		const picked = await ctx.ui.select(
-			"mx-pi-settings (mx-pi-context-stats)",
-			choices.map((c) => c.label),
-		);
-		if (picked === undefined) return;
-		const choice = choices.find((c) => c.label === picked);
-		if (choice) await choice.run();
-	}
-
-	pi.registerCommand("mx-pi-settings", {
-		description: "Configure the mx-pi-context-stats widget (persisted to its config file)",
-		handler: async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
-			const parts = args
-				.trim()
-				.split(/\s+/)
-				.filter((p) => p.length > 0);
-			const cmd = (parts[0] ?? "").toLowerCase();
-			const arg = parts[1];
-
-			switch (cmd) {
-				case "": {
-					if (ctx.hasUI) {
-						await openSettingsPicker(ctx);
-						return;
-					}
-					// No dialog UI (print/json mode): report instead of hanging.
-					ctx.ui.notify(`mx-pi-settings ${describeOptions()}. ${USAGE}`, "info");
-					return;
-				}
-
-				case "toggle": {
-					updateOptions(ctx, { visible: !state.options.visible });
-					ctx.ui.notify(`mx-pi-settings widget ${state.options.visible ? "shown" : "hidden"}`, "info");
-					requestRender();
-					return;
-				}
-
-				case "summary": {
-					ctx.ui.notify(buildSummaryText({ history: state.history, subagents: state.subagents }), "info");
-					return;
-				}
-
-				case "rows":
-				case "subagent-rows": {
-					const key = cmd === "rows" ? "historyRows" : "subagentRows";
-					const [min, max] =
-						cmd === "rows" ? [HISTORY_ROWS_MIN, HISTORY_ROWS_MAX] : [SUBAGENT_ROWS_MIN, SUBAGENT_ROWS_MAX];
-					if (arg === undefined) {
-						ctx.ui.notify(`mx-pi-settings ${cmd}: ${state.options[key]}`, "info");
-						return;
-					}
-					updateOptions(ctx, {
-						[key]: clampInt(arg, min, max, state.options[key]),
-					} as Partial<ContextStatsOptions>);
-					ctx.ui.notify(`mx-pi-settings ${cmd}: ${state.options[key]}`, "info");
-					requestRender();
-					return;
-				}
-
-				case "subagents":
-				case "health": {
-					const key = cmd === "subagents" ? "showSubagents" : "showHealth";
-					if (arg === undefined) {
-						ctx.ui.notify(`mx-pi-settings ${cmd}: ${state.options[key] ? "on" : "off"}`, "info");
-						return;
-					}
-					const value = arg.toLowerCase();
-					if (value !== "on" && value !== "off") {
-						ctx.ui.notify(`Expected on|off, got "${arg}". ${USAGE}`, "warning");
-						return;
-					}
-					updateOptions(ctx, { [key]: value === "on" } as Partial<ContextStatsOptions>);
-					ctx.ui.notify(`mx-pi-settings ${cmd}: ${value}`, "info");
-					requestRender();
-					return;
-				}
-
-				case "placement": {
-					if (arg !== "above" && arg !== "below") {
-						ctx.ui.notify(`Expected above|below. ${USAGE}`, "warning");
-						return;
-					}
-					updateOptions(ctx, { placement: arg === "above" ? "aboveEditor" : "belowEditor" });
-					// Placement is fixed at registration time, so re-register.
-					setupWidget(ctx);
-					ctx.ui.notify(`mx-pi-settings placement: ${arg}`, "info");
-					return;
-				}
-
-				case "reset": {
-					// History is session data, not config: cleared in memory only.
-					state.clearHistory();
-					ctx.ui.notify("mx-pi-settings history cleared", "info");
-					requestRender();
-					return;
-				}
-
-				default: {
-					ctx.ui.notify(`Unknown mx-pi-settings argument: ${cmd}. ${USAGE}`, "warning");
-				}
+	// Session summary is an action, not a setting, so it remains on this extension.
+	pi.registerCommand("mx-pi-context-stats", {
+		description: "Show the current session's context/token/cost summary",
+		handler: async (args, ctx) => {
+			const command = args.trim().toLowerCase();
+			if (command !== "" && command !== "summary") {
+				ctx.ui.notify(COMMAND_USAGE, "warning");
+				return;
 			}
+			ctx.ui.notify(buildSummaryText({ history: state.history, subagents: state.subagents }), "info");
 		},
 	});
 }

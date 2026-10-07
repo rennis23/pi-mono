@@ -8,7 +8,7 @@ function source(overrides: Partial<CompletionSource> = {}): CompletionSource {
 		description: "reads things",
 		source: "bundled",
 		trusted: true,
-		kind: "main",
+		kind: "append",
 		...overrides,
 	};
 }
@@ -62,7 +62,7 @@ describe("toCompletionSource", () => {
 		const agent = makeAgent({ name: "explorer", sourceKind: "bundled" });
 		const projected = toCompletionSource([agent]);
 		expect(projected).toEqual([
-			{ name: "explorer", description: "explorer description", source: "bundled", trusted: true, kind: "main" },
+			{ name: "explorer", description: "explorer description", source: "bundled", trusted: true, kind: "append" },
 		]);
 	});
 });
@@ -84,16 +84,16 @@ describe("completionItems", () => {
 
 	it("orders prefix matches before substring matches", () => {
 		const items = completionItems(roster, { mode: "single", prefix: "#e" });
-		expect(items.map((item) => item.label)).toEqual(["explorer [main]", "planner [main]", "builder [main]"]);
+		expect(items.map((item) => item.label)).toEqual(["explorer [append]", "planner [append]", "builder [append]"]);
 	});
 
 	it("badges each item with its kind and offers the built-in reset row", () => {
-		const items = completionItems([source({ name: "review", kind: "persona" })], {
+		const items = completionItems([source({ name: "review", kind: "replace" })], {
 			mode: "single",
 			prefix: "#",
 		});
 		expect(items[0]).toEqual({ value: "#none", label: "pi.dev [base]", description: "reset to plain pi" });
-		expect(items.some((item) => item.label === "review [persona]" && item.value === "#review")).toBe(true);
+		expect(items.some((item) => item.label === "review [replace]" && item.value === "#review")).toBe(true);
 	});
 
 	it("does not offer the reset row inside a pipeline", () => {
@@ -156,9 +156,9 @@ describe("complete: boundary hardening", () => {
 	});
 
 	it("toCompletionSource maps the pinned fields", () => {
-		const agent = makeAgent({ name: "mapped", agentKind: "persona" });
+		const agent = makeAgent({ name: "mapped", systemPrompt: "replace", mainAgentOnly: true });
 		const [entry] = toCompletionSource([agent]);
-		expect(entry).toMatchObject({ name: "mapped", kind: "persona", trusted: true, source: "global" });
+		expect(entry).toMatchObject({ name: "mapped", kind: "replace", trusted: true, source: "global" });
 	});
 });
 
@@ -191,9 +191,9 @@ describe("complete: survivor kills", () => {
 	});
 
 	it("ranks prefix matches before substring matches", () => {
-		const items = [source({ name: "beta", kind: "main" }), source({ name: "alpha", kind: "main" })];
+		const items = [source({ name: "beta", kind: "append" }), source({ name: "alpha", kind: "append" })];
 		const rows = completionItems(items, { mode: "pipeline", prefix: "a" });
-		expect(rows.map((r) => r.label)).toEqual(["alpha [main]", "beta [main]"]);
+		expect(rows.map((r) => r.label)).toEqual(["alpha [append]", "beta [append]"]);
 	});
 
 	it("caps the roster at 20 items", () => {

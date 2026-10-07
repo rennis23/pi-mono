@@ -142,7 +142,7 @@ describe("renderRosterLines", () => {
 			[
 				{
 					name: "explorer",
-					kind: "main",
+					kind: "append",
 					source: "bundled",
 					trusted: true,
 					hash: "abc123",
@@ -168,7 +168,7 @@ describe("renderRosterLines", () => {
 
 	it("shows the delegate marker only when set", () => {
 		const withDelegate = renderRosterLines(
-			[{ name: "o", kind: "main", source: "bundled", trusted: true, hash: "h", description: "d", delegate: true }],
+			[{ name: "o", kind: "append", source: "bundled", trusted: true, hash: "h", description: "d", delegate: true }],
 			theme,
 		).join("\n");
 		expect(withDelegate).toContain("⇄ delegate");
@@ -177,7 +177,7 @@ describe("renderRosterLines", () => {
 			[
 				{
 					name: "o",
-					kind: "main",
+					kind: "append",
 					source: "bundled",
 					trusted: true,
 					hash: "h",
@@ -195,7 +195,7 @@ describe("renderRosterLines", () => {
 			[
 				{
 					name: "evil\u0007",
-					kind: "main",
+					kind: "append",
 					source: "project",
 					trusted: false,
 					hash: "h",
@@ -386,7 +386,7 @@ describe("render: boundary hardening", () => {
 			[
 				{
 					name: "a",
-					kind: "persona",
+					kind: "replace",
 					source: "global",
 					trusted: true,
 					hash: "abc",
@@ -407,14 +407,14 @@ describe("render: boundary hardening", () => {
 		).join("\n");
 		expect(joined).toContain("trusted");
 		expect(joined).toContain("gated");
-		expect(joined).toContain("[persona]");
+		expect(joined).toContain("[replace]");
 		expect(joined).toContain("d");
 	});
 
-	it("formatSwitchNotice handles base and named kinds", () => {
+	it("formatSwitchNotice handles base and named modes", () => {
 		expect(formatSwitchNotice("x", "base")).toBe("reset to plain pi");
-		expect(formatSwitchNotice("x", "persona")).toBe("switched to persona x");
-		expect(formatSwitchNotice("x", "main")).toBe("switched to main x");
+		expect(formatSwitchNotice("x", "replace")).toBe("switched to replace x");
+		expect(formatSwitchNotice("x", "append")).toBe("switched to append x");
 	});
 
 	it("renderDiagnostics caps at 10 and colors by level", () => {
@@ -454,7 +454,7 @@ describe("render: survivor kills", () => {
 			[
 				{
 					name: "a",
-					kind: "main",
+					kind: "append",
 					source: "bundled",
 					trusted: true,
 					hash: "abc123",

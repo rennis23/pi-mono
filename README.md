@@ -8,7 +8,8 @@ npm workspaces monorepo for [pi.dev](https://pi.dev) extensions.
 pi-mono/
 ├── packages/          # Workspace packages
 │   ├── mx-pi-agents/        # Secure agent registry and subagent runner
-│   └── mx-pi-context-stats/ # Context/token/cost stats widget
+│   ├── mx-pi-context-stats/ # Context/token/cost stats widget
+│   └── mx-pi-settings/      # Central settings hub + SDK for mx-pi extensions
 ├── scripts/           # Release, security, and mutation helpers
 ├── test/              # Shared test setup
 ├── .github/           # Pull-request CI and CodeQL configuration

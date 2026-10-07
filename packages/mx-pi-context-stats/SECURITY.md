@@ -3,28 +3,30 @@
 ## Threat model
 
 This extension runs inside the pi host process and receives session events,
-usage data, tool progress, configuration values, and user-provided command
-arguments. Its configuration file is local data under the pi agent directory.
+usage data, tool progress, registered configuration values, and user-provided
+command arguments. Its registered settings are stored by the mx-pi-settings hub
+in a shared JSON document under the pi agent directory.
 
 ### Assets and boundaries
 
 | Boundary | Input | Control |
 | --- | --- | --- |
-| B1: config file → extension | Local JSON controlled by the user or another local process | Parse failures and unknown values fall back to safe defaults; numeric and enum values are bounded |
-| B2: command/CLI input → options | User-provided command arguments and flags | Options are parsed and clamped before rendering or persistence |
+| B1: shared settings store → extension | Local JSON controlled by the user or another local process | The hub parses the file and validates values against registered field bounds and enum options |
+| B2: hub SDK → options | Provider's typed settings handle and `onChange` callback | Values are limited to the registered scalar fields and passed through `withOptions` before use |
 | B3: pi events → widget/status | Session usage and tool-progress payloads | Payloads are parsed tolerantly; unmeasurable values are omitted rather than fabricated |
-| B4: extension → filesystem | Configuration persistence | Only the extension’s config path is written; the path is derived from pi’s agent directory |
+| B4: extension → filesystem | Configuration persistence | The settings hub writes the namespaced shared file under pi's agent directory using atomic replacement |
 | B5: extension → terminal UI | Names, models, tool labels, and diagnostics | Rendering helpers format bounded values and avoid replacing pi’s native footer |
 
 ## Enforced protections
 
-- Malformed, unreadable, or non-object configuration is ignored and does not
-  prevent startup.
-- Numeric settings are clamped to their supported ranges, invalid placement
-  values are ignored, and unknown configuration keys are discarded.
-- Configuration writes are limited to the extension-specific JSON file under
-  the active pi agent directory. Tests inject a temporary path and do not use a
-  real user directory.
+- Malformed, unreadable, or non-object shared settings are ignored by the hub
+  and do not prevent startup.
+- Registered numeric settings are bounded by their field specs, invalid
+  placement values are rejected by select membership, and unknown registration
+  keys are not exposed in the UI.
+- The extension writes settings only through its registered SDK handle; the hub
+  owns the shared file path and atomic writes. Tests inject a temporary agent
+  directory and do not use a real user directory.
 - Usage and progress data are treated as optional. Missing or invalid metrics
   are omitted instead of rendering `NaN`, `Infinity`, or misleading zeroes.
 - Runtime state is held in memory for the current session and is reset through
@@ -33,15 +35,15 @@ arguments. Its configuration file is local data under the pi agent directory.
   excludes tests, fixtures, local configuration, and development reports.
 
 The implementation and co-located tests are the authoritative evidence for
-these controls, especially `src/config.test.ts`, `src/options.test.ts`,
-`src/health.test.ts`, `src/format.test.ts`, and `index.test.ts`.
+these controls, especially `src/options.test.ts`, `src/health.test.ts`,
+`src/format.test.ts`, and `index.test.ts`.
 
 ## Not enforced
 
 - The extension does not isolate itself from the pi host process. A malicious
   or compromised host can inspect or modify its state.
-- It does not authenticate local filesystem writers or protect the config file
-  from another process that can write the same agent directory.
+- It does not authenticate local filesystem writers or protect the shared
+  settings file from another process that can write the same agent directory.
 - It does not validate the trustworthiness of model, provider, tool, or
   subagent data supplied by pi.
 - It does not provide process-level sandboxing, network isolation, or a policy
@@ -52,8 +54,9 @@ these controls, especially `src/config.test.ts`, `src/options.test.ts`,
 ## Residual risk
 
 A local process with write access to the pi agent directory can change options
-or replace the configuration between reads. This can alter presentation and
-persistence behavior but does not grant the extension new host capabilities.
+or replace the shared settings document between reads. This can alter
+presentation and persistence behavior but does not grant the extension new host
+capabilities.
 The extension inherits the permissions and trust of the pi process in which it
 runs.
 

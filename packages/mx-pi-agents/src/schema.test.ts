@@ -47,6 +47,8 @@ describe("parseAgentDefinition", () => {
 						"cost_budget: 0.5",
 						"isolation: subprocess",
 						"sandbox: os",
+						"system_prompt: replace",
+						"main_agent_only: true",
 					].join("\n"),
 				),
 			),
@@ -54,6 +56,9 @@ describe("parseAgentDefinition", () => {
 
 		expect(definition.name).toBe("reviewer");
 		expect(definition.description).toBe("Read-only code review");
+		expect(definition.systemPrompt).toBe("replace");
+		expect(definition.mainAgentOnly).toBe(true);
+		expect(definition.subAgentOnly).toBe(false);
 		expect(definition.tools).toEqual(["read", "grep", "find", "ls"]);
 		expect(definition.scope).toEqual(["src", "docs"]);
 		expect(definition.skills).toEqual(["alpha", "beta-1"]);
@@ -229,20 +234,55 @@ describe("parseAgentDefinition", () => {
 		expectErr(parseAgentDefinition(md('name: "a\\u0007b"\ndescription: d')), "name must match");
 	});
 
-	it("defaults kind to main when the field is absent", () => {
-		expect(expectOk(parseAgentDefinition(md("name: a\ndescription: d"))).kind).toBe("main");
+	it("defaults system_prompt to append and both flags to false when the fields are absent", () => {
+		const definition = expectOk(parseAgentDefinition(md("name: a\ndescription: d")));
+		expect(definition.systemPrompt).toBe("append");
+		expect(definition.subAgentOnly).toBe(false);
+		expect(definition.mainAgentOnly).toBe(false);
 	});
 
-	it("parses each valid kind", () => {
-		for (const kind of ["persona", "main", "sub"] as const) {
-			expect(expectOk(parseAgentDefinition(md(`name: a\ndescription: d\nkind: ${kind}`))).kind).toBe(kind);
+	it("parses each valid system_prompt mode and each flag", () => {
+		for (const mode of ["replace", "append"] as const) {
+			expect(
+				expectOk(parseAgentDefinition(md(`name: a\ndescription: d\nsystem_prompt: ${mode}`))).systemPrompt,
+			).toBe(mode);
 		}
+		expect(expectOk(parseAgentDefinition(md("name: a\ndescription: d\nsub_agent_only: true"))).subAgentOnly).toBe(
+			true,
+		);
+		expect(expectOk(parseAgentDefinition(md("name: a\ndescription: d\nmain_agent_only: true"))).mainAgentOnly).toBe(
+			true,
+		);
 	});
 
-	it("drops a definition with an unknown or non-string kind", () => {
-		expectErr(parseAgentDefinition(md("name: a\ndescription: d\nkind: sys")), "kind must be one of");
-		expectErr(parseAgentDefinition(md("name: a\ndescription: d\nkind: PERSONA")), "kind must be one of");
-		expectErr(parseAgentDefinition(md("name: a\ndescription: d\nkind: 3")), "kind must be one of");
+	it("drops a definition with an unknown or non-string system_prompt", () => {
+		expectErr(
+			parseAgentDefinition(md("name: a\ndescription: d\nsystem_prompt: sys")),
+			"system_prompt must be one of",
+		);
+		expectErr(
+			parseAgentDefinition(md("name: a\ndescription: d\nsystem_prompt: REPLACE")),
+			"system_prompt must be one of",
+		);
+		expectErr(parseAgentDefinition(md("name: a\ndescription: d\nsystem_prompt: 3")), "system_prompt must be one of");
+	});
+
+	it("drops a definition that is both sub-agent-only and main-agent-only", () => {
+		expectErr(
+			parseAgentDefinition(md("name: a\ndescription: d\nsub_agent_only: true\nmain_agent_only: true")),
+			"mutually exclusive",
+		);
+	});
+
+	it("drops a definition with a non-boolean sub_agent_only or main_agent_only", () => {
+		expectErr(
+			parseAgentDefinition(md("name: a\ndescription: d\nsub_agent_only: yes")),
+			"sub_agent_only must be a boolean",
+		);
+		expectErr(
+			parseAgentDefinition(md("name: a\ndescription: d\nmain_agent_only: 1")),
+			"main_agent_only must be a boolean",
+		);
 	});
 
 	it("drops a definition named none because the reset name is reserved", () => {
@@ -431,11 +471,14 @@ describe("schema: boundary hardening", () => {
 		rawErr({ ...base, context_files: [1] }, "invalid path entry");
 	});
 
-	it("validates kind, inheritance, thinking, isolation and sandbox enums", () => {
-		expect(rawOk({ ...base }).kind).toBe("main");
-		expect(rawOk({ ...base, kind: "persona" }).kind).toBe("persona");
-		expect(rawOk({ ...base, kind: "sub" }).kind).toBe("sub");
-		rawErr({ ...base, kind: "bogus" }, "kind must be one of");
+	it("validates system_prompt, the only-flags, inheritance, thinking, isolation and sandbox enums", () => {
+		expect(rawOk({ ...base }).systemPrompt).toBe("append");
+		expect(rawOk({ ...base, system_prompt: "replace" }).systemPrompt).toBe("replace");
+		rawErr({ ...base, system_prompt: "bogus" }, "system_prompt must be one of");
+		expect(rawOk({ ...base, sub_agent_only: true }).subAgentOnly).toBe(true);
+		expect(rawOk({ ...base, main_agent_only: true }).mainAgentOnly).toBe(true);
+		rawErr({ ...base, sub_agent_only: true, main_agent_only: true }, "mutually exclusive");
+		rawErr({ ...base, sub_agent_only: "yes" }, "sub_agent_only must be a boolean");
 		rawErr({ ...base, tools_inheritance: "bogus" }, 'tools_inheritance must be "none" or "parent"');
 		expect(rawOk({ ...base, tools_inheritance: "parent" }).toolsInheritance).toBe("parent");
 		rawErr({ ...base, thinking: "bogus" }, "thinking must be one of");
@@ -583,10 +626,10 @@ describe("schema: survivor kills", () => {
 		expect(def.scope).toEqual(["src"]);
 	});
 
-	it("names the allowed kind, thinking, isolation and sandbox values", () => {
+	it("names the allowed system_prompt, thinking, isolation and sandbox values", () => {
 		expectErr(
-			parseAgentDefinition(md("name: a\ndescription: d\nkind: weird")),
-			"kind must be one of: persona, main, sub",
+			parseAgentDefinition(md("name: a\ndescription: d\nsystem_prompt: weird")),
+			"system_prompt must be one of: replace, append",
 		);
 		expectErr(parseAgentDefinition(md("name: a\ndescription: d\nthinking: weird")), "thinking must be one of");
 		expectErr(
@@ -610,11 +653,13 @@ describe("schema: survivor kills", () => {
 		const def = expectOk(
 			parseAgentDefinition(
 				md(
-					"name: a\ndescription: d\nkind: null\ntools_inheritance: null\nthinking: null\nisolation: null\nsandbox: null",
+					"name: a\ndescription: d\nsystem_prompt: null\nsub_agent_only: null\nmain_agent_only: null\ntools_inheritance: null\nthinking: null\nisolation: null\nsandbox: null",
 				),
 			),
 		);
-		expect(def.kind).toBe("main");
+		expect(def.systemPrompt).toBe("append");
+		expect(def.subAgentOnly).toBe(false);
+		expect(def.mainAgentOnly).toBe(false);
 		expect(def.toolsInheritance).toBe("none");
 		expect(def.thinking).toBeUndefined();
 		expect(def.isolation).toBe("process");

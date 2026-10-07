@@ -9,12 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Breaking:** `#name <task>` is now a main-session switch for the new
-  `persona`/`main` kinds instead of a child delegation. Definitions without a
-  `kind:` field default to `main`, so `#explorer <task>` switches the main
+- **Breaking:** `#name <task>` is now a main-session switch for switchable
+  definitions instead of a child delegation. The frontmatter vocabulary changed:
+  `system_prompt: replace|append` (default `append`) selects how the body
+  mutates the system prompt, and the booleans `sub_agent_only` / `main_agent_only`
+  restrict where a definition may run. A definition with neither flag defaults to
+  being usable in both places, so `#explorer <task>` switches the main
   session. Delegation to the same agents remains available through
   `#[explorer] <task>` and the `mx_pi_agent` tool. Definitions that should keep
-  delegating from a bare name must declare `kind: sub`.
+  delegating from a bare name must declare `sub_agent_only: true`.
 - `#none` is now reserved and resets the main session to plain pi. A definition
   named `none` is dropped at discovery with a diagnostic.
 - **Breaking:** the bundled `productbuilder` orchestrator is renamed to
@@ -48,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   space, and the npm cache (`~/.npm`, or `npm_config_cache`) is now readable but
   deliberately not writable, so a sandboxed child cannot poison a cache the host
   later reads. Writes remain otherwise limited to the run scope.
+- Verified against pi 1.0.3 and bumped the dev dependencies
+  (`@earendil-works/pi-coding-agent` / `@earendil-works/pi-tui` to `^1.0.3`).
+  The peer range stays `>=0.80.0`. No source change was needed for 1.0: the
+  extension uses no API removed between 0.82 and 1.0.
+- `mx_pi_agent` now carries 0.99 tool metadata: a `namespace` and
+  `annotations` (`readOnlyHint: false`, `destructiveHint: true`,
+  `idempotentHint: false`, `openWorldHint: true`) so permission extensions can
+  gate delegated runs.
 
 ### Added
 
@@ -63,33 +74,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before it reports: it delegates to `verifier` and `security-reviewer`, and a
   Critical or High finding blocks the report until it is fixed and re-reviewed.
 - Main-session delegation: a `delegate: true` frontmatter field on a
-  `persona`/`main` definition keeps the `mx_pi_agent` tool active across a
+  main-session definition keeps the `mx_pi_agent` tool active across a
   main-session switch. The flag unions `mx_pi_agent` into the applied tool
   preset (the declared `tools`, or the current active set when `tools` is
   absent) and refuses the switch if the tool does not resolve. It is a
   main-session verb only: child runs ignore it, so a child can never delegate.
   `/mx-pi-agents list` marks delegating definitions with a `⇄ delegate` token.
-- Bundled `product-builder` orchestrator: a `main`-kind agent with
+- Bundled `product-builder` orchestrator: an append-mode agent with
   `delegate: true` and read-only tools that runs the
   explorer → planner → builder → reviewer pipeline and ends with a commit
   message plus a PR title and description (it does not open the PR).
 - Main-session resource allow-lists: `skills` and `context_files` frontmatter
-  fields on a `persona`/`main` definition narrow the prompt sections pi's
+  fields on a main-session definition narrow the prompt sections pi's
   resource loader renders (skills and project context) while the switch is
   active. List semantics mirror `tools`: absent = inherit the loaded set,
   `[]` = none, `[a, b]` = only those entries. pi has no unload call, so a
   definition can only narrow; unknown entries match nothing. The bundled
-  `socrates` persona now declares `skills: []` and `context_files: []` on top of
+  `socrates` agent now declares `skills: []` and `context_files: []` on top of
   `tools: []`.
-- Agent kinds: an optional `kind:` frontmatter field (`persona`, `main`, `sub`,
-  default `main`). A `persona`/`main` definition can be applied to the main
-  session with `#name`: `persona` replaces the system prompt prefix (the
-  `--system-prompt` code path) and `main` appends to the system prompt (the
-  `--append-system-prompt` code path). A switch also applies the definition's
+- Prompt modes and visibility flags: an optional `system_prompt` frontmatter
+  field (`replace`, or `append` by default). A switchable definition can be
+  applied to the main session with `#name`: `replace` replaces the system prompt
+  prefix (the `--system-prompt` code path) and `append` appends to the system
+  prompt (the `--append-system-prompt` code path). The booleans `sub_agent_only`
+  and `main_agent_only` restrict a definition to one session; setting both drops
+  the definition as invalid. A switch also applies the definition's
   `tools`, `model` and `thinking` as a preset, fail-closed, and records a
   session-scoped custom entry so it survives a resume. `#none` restores the
-  exact pre-switch baseline; `sub` agents keep delegating. The active switch is
-  shown in the footer and the roster/autocomplete now show kind badges.
+  exact pre-switch baseline; sub-agent-only definitions keep delegating. The
+  active switch is shown in the footer and the roster/autocomplete show mode
+  badges.
+- Registers the `defaultPersona` setting with `@rennis23/mx-pi-settings`; it is
+  applied at session start when no switch was rehydrated from the branch.
 - Child telemetry on the shared extension event bus: each in-process child run
   loads one in-process inline extension that re-publishes its lifecycle events
   (`session_start`, `context`, `before_provider_request`, `message_end`,
@@ -117,8 +133,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional OS-level bash sandbox (`sandbox: os`) for platforms with a supported
   backend.
 - Bundled read-only `explorer`, `planner` and `reviewer` agents plus the writing
-  `builder` agent, and the bundled `socrates` `persona` (no tools) that
-  interrogates a problem with a chosen number of Socratic questions.
+  `builder` agent, and the bundled `socrates` main-only `replace` agent (no tools)
+  that interrogates a problem with a chosen number of Socratic questions.
 - `mx_pi_agent` tool, `/mx-pi-agents list|approve|status|refresh` command, and
   `--mx-pi-agents-list` / `--mx-pi-agents-disable` flags.
 - Per-run path scope: the config `scope` ceiling and the definition `scope`
@@ -126,17 +142,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the run scope (invariant 11).
 - `SECURITY.md` with the threat model, an enforced/not-enforced table, the
   decisions log and residual risk.
-
-### Changed
-
-- Verified against pi 0.99.1 and bumped the dev dependencies
-  (`@earendil-works/pi-coding-agent` / `@earendil-works/pi-tui` to `^0.99.1`,
-  `typebox` to `^1.3.27`). The peer range stays `>=0.80.0`. No source change was
-  needed for 0.99: the extension uses no API removed between 0.82 and 0.99.
-- `mx_pi_agent` now carries 0.99 tool metadata: a `namespace` and
-  `annotations` (`readOnlyHint: false`, `destructiveHint: true`,
-  `idempotentHint: false`, `openWorldHint: true`) so permission extensions can
-  gate delegated runs.
 
 ### Security
 

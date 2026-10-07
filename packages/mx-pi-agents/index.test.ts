@@ -15,6 +15,44 @@ import mxPiAgents, { unavailable } from "./index.js";
 import { CHILD_TELEMETRY_CHANNEL } from "./src/telemetry.js";
 import { createHarness, type Harness, mockTheme } from "./test/harness.js";
 
+const settingsState = vi.hoisted(() => ({
+	values: { defaultPersona: "" } as Record<string, string>,
+	spec: undefined as
+		| undefined
+		| {
+				id: string;
+				title: string;
+				fields: Array<{ key: string; default: unknown }>;
+				onChange?: (values: { defaultPersona: string }) => void;
+		  },
+}));
+
+vi.mock("@rennis23/mx-pi-settings", () => ({
+	registerSettings: (_pi: unknown, spec: NonNullable<typeof settingsState.spec>) => {
+		settingsState.spec = spec;
+		const defaults: Record<string, unknown> = {};
+		for (const field of spec.fields) defaults[field.key] = field.default;
+		return {
+			id: spec.id,
+			values: () => ({ ...defaults, ...settingsState.values }),
+			get: (key: string) => ({ ...defaults, ...settingsState.values })[key],
+			set: (key: string, value: unknown) => {
+				settingsState.values[key] = String(value);
+				spec.onChange?.({ ...defaults, ...settingsState.values } as { defaultPersona: string });
+				return { ok: true, values: {} };
+			},
+			reset: () => ({ ok: true, values: {} }),
+			dispose: () => {},
+		};
+	},
+}));
+
+/** Drive the settings `onChange` callback the way the hub would. */
+function setDefaultPersona(value: string): void {
+	settingsState.values.defaultPersona = value;
+	settingsState.spec?.onChange?.({ defaultPersona: value });
+}
+
 // The runner is stubbed for the whole file: no test here creates a real SDK
 // session, and the directive suite needs a deterministic successful result.
 const inProcessState = vi.hoisted(() => ({
@@ -93,6 +131,7 @@ beforeEach(() => {
 	// lands in the temp dir instead of the developer's real ~/.pi.
 	previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
+	settingsState.values.defaultPersona = "";
 	inProcessState.plans.length = 0;
 	inProcessState.beforeRun = undefined;
 	inProcessState.telemetry.length = 0;
@@ -474,8 +513,8 @@ describe("# directive input handler", () => {
 		const result = await emitInput({ text: "#builder" });
 
 		expect(result).toEqual({ action: "handled" });
-		expect(harness.notificationText()).toContain("switched to main builder");
-		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents-persona", "main:builder");
+		expect(harness.notificationText()).toContain("switched to append builder");
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents", "append:builder");
 		expect(harness.messages).toHaveLength(0);
 	});
 
@@ -554,7 +593,7 @@ describe("# directive input handler", () => {
 		expect(result).toEqual({ action: "transform", text: "do it" });
 		expect(harness.ui.confirm).toHaveBeenCalled();
 		expect(harness.ui.confirm.mock.calls[0][1]).toContain("main system prompt");
-		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents-persona", "main:local");
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents", "append:local");
 	});
 
 	it("refuses a switch whose definition changed after pinning", async () => {
@@ -744,30 +783,102 @@ describe("child telemetry", () => {
 	});
 });
 
+describe("default persona", () => {
+	it("registers the settings hub spec", () => {
+		expect(settingsState.spec?.id).toBe("mx-pi-agents");
+		expect(settingsState.spec?.title).toBe("Agents");
+		expect(settingsState.spec?.fields.map((field) => field.key)).toEqual(["defaultPersona"]);
+	});
+
+	it("applies a trusted default persona at session start", async () => {
+		setDefaultPersona("socrates");
+		await start();
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents", "replace:socrates");
+		expect(harness.notificationText()).toContain("switched to replace socrates");
+	});
+
+	it("reads the stored default persona at session start even without onChange", async () => {
+		settingsState.values.defaultPersona = "socrates";
+		await start();
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents", "replace:socrates");
+	});
+
+	it("notifies and stays plain for an unknown default persona", async () => {
+		setDefaultPersona("ghost");
+		await start();
+		expect(harness.notificationText()).toContain("unknown");
+		expect(harness.ui.setStatus).not.toHaveBeenCalledWith("mx-pi-agents", expect.stringContaining("ghost"));
+	});
+
+	it("runs the approval flow for a gated default persona", async () => {
+		writeAgent(join(cwd, ".pi", "agents"), "local");
+		harness = createHarness({ cwd, activeTools: ["read"], confirmResult: true });
+		mxPiAgents(harness.pi);
+		setDefaultPersona("local");
+		await start();
+		expect(harness.ui.confirm).toHaveBeenCalled();
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents", "append:local");
+	});
+
+	it("leaves a declined gated default persona unapplied", async () => {
+		writeAgent(join(cwd, ".pi", "agents"), "local");
+		harness = createHarness({ cwd, activeTools: ["read"], confirmResult: false });
+		mxPiAgents(harness.pi);
+		setDefaultPersona("local");
+		await start();
+		expect(harness.ui.setStatus).not.toHaveBeenCalledWith("mx-pi-agents", "append:local");
+	});
+
+	it("does not re-apply the default persona over a rehydrated switch", async () => {
+		writeAgent(join(agentDir, "agents"), "style", "system_prompt: replace\nmain_agent_only: true\n");
+		harness = createHarness({
+			cwd,
+			activeTools: ["read"],
+			branch: [
+				{
+					type: "custom",
+					customType: "mx-pi-agents.switch",
+					data: {
+						name: "style",
+						mode: "replace",
+						baseline: { tools: ["read"], model: undefined, thinking: "medium" },
+						applied: {},
+						switchedAt: 1,
+					},
+				},
+			],
+		});
+		mxPiAgents(harness.pi);
+		setDefaultPersona("socrates");
+		await start();
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents", "replace:style");
+	});
+});
+
 describe("# main-session switching", () => {
 	async function emitInput(payload: Record<string, unknown>): Promise<unknown> {
 		return harness.emit("input", { source: "interactive", ...payload });
 	}
 
-	function lastSwitchEntry(): { data?: { name?: string | null } } | undefined {
+	function lastSwitchEntry(): { data?: { name?: string | null; mode?: string } } | undefined {
 		return harness.branchEntries.filter((entry) => entry.customType === "mx-pi-agents.switch").at(-1) as
-			| { data?: { name?: string | null } }
+			| { data?: { name?: string | null; mode?: string } }
 			| undefined;
 	}
 
 	it("switches with a task, returns transform and records the switch", async () => {
-		writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
+		writeAgent(join(agentDir, "agents"), "style", "system_prompt: replace\nmain_agent_only: true\n");
 		await start();
 
 		const result = await emitInput({ text: "#style use tabs" });
 
 		expect(result).toEqual({ action: "transform", text: "use tabs" });
-		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents-persona", "persona:style");
-		expect(lastSwitchEntry()?.data).toMatchObject({ name: "style", kind: "persona" });
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents", "replace:style");
+		expect(lastSwitchEntry()?.data).toMatchObject({ name: "style", mode: "replace" });
 	});
 
 	it("replaces the prompt prefix for a persona and appends for a main agent", async () => {
-		writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
+		writeAgent(join(agentDir, "agents"), "style", "system_prompt: replace\nmain_agent_only: true\n");
 		writeAgent(join(agentDir, "agents"), "helper");
 		await start();
 
@@ -785,7 +896,11 @@ describe("# main-session switching", () => {
 	});
 
 	it("narrows skills and context files to the persona's allow-lists", async () => {
-		writeAgent(join(agentDir, "agents"), "style", "kind: persona\nskills: [alpha]\ncontext_files: [AGENTS.md]\n");
+		writeAgent(
+			join(agentDir, "agents"),
+			"style",
+			"system_prompt: replace\nmain_agent_only: true\nskills: [alpha]\ncontext_files: [AGENTS.md]\n",
+		);
 		await start();
 		await emitInput({ text: "#style" });
 
@@ -805,7 +920,7 @@ describe("# main-session switching", () => {
 	});
 
 	it("leaves skills and context files untouched when the persona does not declare them", async () => {
-		writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
+		writeAgent(join(agentDir, "agents"), "style", "system_prompt: replace\nmain_agent_only: true\n");
 		await start();
 		await emitInput({ text: "#style" });
 
@@ -824,7 +939,11 @@ describe("# main-session switching", () => {
 	});
 
 	it("restores skills and context files after #none", async () => {
-		writeAgent(join(agentDir, "agents"), "style", "kind: persona\nskills: []\ncontext_files: []\n");
+		writeAgent(
+			join(agentDir, "agents"),
+			"style",
+			"system_prompt: replace\nmain_agent_only: true\nskills: []\ncontext_files: []\n",
+		);
 		await start();
 		await emitInput({ text: "#style" });
 		await emitInput({ text: "#none" });
@@ -844,7 +963,7 @@ describe("# main-session switching", () => {
 	});
 
 	it("resets to plain pi with #none and refuses a task", async () => {
-		writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
+		writeAgent(join(agentDir, "agents"), "style", "system_prompt: replace\nmain_agent_only: true\n");
 		await start();
 		await emitInput({ text: "#style" });
 
@@ -854,7 +973,7 @@ describe("# main-session switching", () => {
 
 		const result = await emitInput({ text: "#none" });
 		expect(result).toEqual({ action: "handled" });
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("mx-pi-agents-persona", undefined);
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("mx-pi-agents", undefined);
 		expect(lastSwitchEntry()?.data?.name).toBeNull();
 
 		const options: Record<string, unknown> = { customPrompt: undefined, appendSystemPrompt: "" };
@@ -863,10 +982,13 @@ describe("# main-session switching", () => {
 	});
 
 	it("deactivates the switch when the definition changes mid-session", async () => {
-		const path = writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
+		const path = writeAgent(join(agentDir, "agents"), "style", "system_prompt: replace\nmain_agent_only: true\n");
 		await start();
 		await emitInput({ text: "#style" });
-		writeFileSync(path, "---\nname: style\ndescription: style description\nkind: persona\n---\n\nEVIL\n");
+		writeFileSync(
+			path,
+			"---\nname: style\ndescription: style description\nsystem_prompt: replace\nmain_agent_only: true\n---\n\nEVIL\n",
+		);
 
 		const options: Record<string, unknown> = { customPrompt: undefined, appendSystemPrompt: "" };
 		await harness.emit("before_agent_start", { systemPromptOptions: options, systemPrompt: "", prompt: "" });
@@ -875,7 +997,7 @@ describe("# main-session switching", () => {
 	});
 
 	it("rehydrates a persisted switch on session start", async () => {
-		writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
+		writeAgent(join(agentDir, "agents"), "style", "system_prompt: replace\nmain_agent_only: true\n");
 		harness = createHarness({
 			cwd,
 			activeTools: ["read", "grep", "bash"],
@@ -885,7 +1007,7 @@ describe("# main-session switching", () => {
 					customType: "mx-pi-agents.switch",
 					data: {
 						name: "style",
-						kind: "persona",
+						mode: "replace",
 						baseline: { tools: ["read", "grep", "bash"], model: undefined, thinking: "medium" },
 						applied: {},
 						switchedAt: 1,
@@ -896,14 +1018,14 @@ describe("# main-session switching", () => {
 		mxPiAgents(harness.pi);
 		await start();
 
-		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents-persona", "persona:style");
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents", "replace:style");
 		const options: Record<string, unknown> = { customPrompt: undefined, appendSystemPrompt: "" };
 		await harness.emit("before_agent_start", { systemPromptOptions: options, systemPrompt: "", prompt: "" });
 		expect(options.customPrompt).toBe("Body for style.");
 	});
 
 	it("delegates a sub agent and refuses a bare sub", async () => {
-		writeAgent(join(agentDir, "agents"), "worker", "kind: sub\n");
+		writeAgent(join(agentDir, "agents"), "worker", "sub_agent_only: true\n");
 		await start();
 
 		const bare = await emitInput({ text: "#worker" });
@@ -928,12 +1050,12 @@ describe("# main-session switching", () => {
 		const result = await emitInput({ text: "#product-builder ship it" });
 
 		expect(result).toEqual({ action: "transform", text: "ship it" });
-		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents-persona", "main:product-builder");
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("mx-pi-agents", "append:product-builder");
 		expect(harness.activeTools()).toEqual(["read", "grep", "find", "ls", "mx_pi_agent"]);
 	});
 
 	it("refuses a persona as a child through the tool and a pipeline", async () => {
-		writeAgent(join(agentDir, "agents"), "style", "kind: persona\n");
+		writeAgent(join(agentDir, "agents"), "style", "system_prompt: replace\nmain_agent_only: true\n");
 		await start();
 
 		const toolResult = (await harness.runTool("mx_pi_agent", { agent: "style", task: "do it" })) as ToolResult;
@@ -1006,15 +1128,23 @@ describe("mutation-hardening: index wiring", () => {
 	});
 
 	it("switches to a persona with a provider-qualified model", async () => {
-		writeAgent(join(agentDir, "agents"), "styled", "kind: persona\nmodel: anthropic/claude-sonnet-4-5\n");
+		writeAgent(
+			join(agentDir, "agents"),
+			"styled",
+			"system_prompt: replace\nmain_agent_only: true\nmodel: anthropic/claude-sonnet-4-5\n",
+		);
 		await start();
 		const result = await emitInput({ text: "#styled" });
 		expect(result).toEqual({ action: "handled" });
-		expect(harness.notificationText()).toContain("switched to persona styled");
+		expect(harness.notificationText()).toContain("switched to replace styled");
 	});
 
 	it("refuses a persona whose bare model does not resolve", async () => {
-		writeAgent(join(agentDir, "agents"), "styled", "kind: persona\nmodel: bare-model\n");
+		writeAgent(
+			join(agentDir, "agents"),
+			"styled",
+			"system_prompt: replace\nmain_agent_only: true\nmodel: bare-model\n",
+		);
 		await start();
 		await emitInput({ text: "#styled" });
 		expect(harness.notificationText()).toContain("not available");

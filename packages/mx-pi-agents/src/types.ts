@@ -17,13 +17,14 @@ import type { ChildTelemetrySink } from "./telemetry.js";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
- * What a definition is for.
+ * How a definition's body mutates the main system prompt.
  *
- * - `persona` replaces the main system prompt prefix via `#name`; never runs as a child.
- * - `main` appends to the main system prompt via `#name`; may also run as a child.
- * - `sub` is only usable as a child (tool, `#[…]`, or delegation).
+ * - `replace` replaces the default prompt prefix via `before_agent_start`.
+ * - `append` appends the body as an addendum to the system prompt.
+ *
+ * Absent frontmatter defaults to `append`.
  */
-export type AgentKind = "persona" | "main" | "sub";
+export type SystemPromptMode = "replace" | "append";
 
 /** How a child session is executed. */
 export type IsolationMode = "process" | "subprocess";
@@ -44,8 +45,12 @@ export type ToolsInheritance = "none" | "parent";
 export interface AgentDefinition {
 	name: string;
 	description: string;
-	/** What the definition is for. Absent frontmatter defaults to `main`. */
-	kind: AgentKind;
+	/** How the body mutates the main system prompt. Absent frontmatter = `append`. */
+	systemPrompt: SystemPromptMode;
+	/** True when the definition may only run as a child (tool, `#[…]`, or delegation). */
+	subAgentOnly: boolean;
+	/** True when the definition may only run in the main session and never as a child. */
+	mainAgentOnly: boolean;
 	/**
 	 * Explicit grant set. `undefined` means the field was absent (inheritance
 	 * decides); `[]` means the field was present and empty (no tools).
@@ -159,7 +164,7 @@ export type RefusalReason =
 	| "recursion"
 	| "model-unavailable"
 	| "sandbox-unavailable"
-	| "persona-child"
+	| "main-agent-only"
 	| "invalid-request"
 	| "child-session";
 
@@ -252,14 +257,14 @@ export interface SwitchApplied {
 }
 
 /**
- * A `persona`/`main` switch plan produced by the pure persona module. The
- * wiring layer applies it verbatim; it never interprets it.
+ * A main-session switch plan produced by the pure persona module. The wiring
+ * layer applies it verbatim; it never interprets it. The prompt body is read
+ * from the pinned definition at apply time, never cached here.
  */
 export interface SwitchPlan {
 	name: string;
-	kind: "persona" | "main";
 	/** How the definition body mutates the main system prompt. */
-	prompt: { mode: "replace" | "append"; body: string };
+	mode: SystemPromptMode;
 	applied: SwitchApplied;
 }
 
@@ -269,7 +274,7 @@ export interface SwitchPlan {
  */
 export interface SwitchEntryData {
 	name: string | null;
-	kind?: AgentKind;
+	mode?: SystemPromptMode;
 	baseline: SwitchBaseline;
 	applied?: SwitchApplied;
 	switchedAt: number;

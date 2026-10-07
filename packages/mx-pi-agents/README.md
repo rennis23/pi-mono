@@ -65,12 +65,13 @@ call settles every task and reports per-task status. While a call runs, the
 ## Direct invocation
 
 In the interactive TUI you can invoke an agent directly from the prompt with a
-`#` directive, without the model having to call the tool. A definition's `kind`
-(see [agent kinds](#agent-kinds)) decides what a bare `#name` does: `persona`
-and `main` switch the **main session**, `sub` delegates to a child.
+`#` directive, without the model having to call the tool. A definition's
+`system_prompt` mode and visibility flags (see [prompt modes](#prompt-modes))
+decide what a bare `#name` does: main-session definitions switch the **main
+session**, sub-agent-only definitions delegate to a child.
 
 ```text
-#explorer Where is the config loaded?      # switch (explorer defaults to main)
+#explorer Where is the config loaded?      # switch (explorer appends by default)
 #reviewer                                  # switch and wait
 #none                                      # reset to plain pi
 
@@ -81,17 +82,18 @@ The directive grammar:
 
 | Syntax | Meaning |
 | --- | --- |
-| `#name [prompt]` | Switch the main session to a `persona`/`main` agent; with a prompt, send it under the new persona |
-| `#name [prompt]` | Delegate to a `sub` agent (a prompt is required) |
+| `#name [prompt]` | Switch the main session to a switchable agent; with a prompt, send it under the new prompt |
+| `#name [prompt]` | Delegate to a sub-agent-only agent (a prompt is required) |
 | `#none` | Reset the main session to plain pi (takes no prompt) |
 | `#[a > b] <prompt>` | Delegate: run `a`, then feed its output to `b` |
 | `#[a, b] <prompt>` | Delegate: run `a` and `b` in parallel with the same prompt |
 | `#[a > b, c > d] <prompt>` | Delegate: `a`; then `b` and `c` in parallel; then `d` |
 
-Bracketed pipelines and the `mx_pi_agent` tool always run children, so a `sub`
-agent without brackets is the only single-name form that delegates. `persona`
-agents are refused as children everywhere; `main` agents may still run as
-children. `none` is reserved and can never be a definition name.
+Bracketed pipelines and the `mx_pi_agent` tool always run children, so a
+sub-agent-only agent without brackets is the only single-name form that
+delegates. `main_agent_only` agents are refused as children everywhere; agents
+without that flag may still run as children. `none` is reserved and can never
+be a definition name.
 
 Stages flow with cascade `{previous}`: stage 1 receives `<prompt>` and every
 later stage receives the previous stage's combined output (for a parallel stage,
@@ -99,7 +101,7 @@ the successful results joined under `--- <agent> ---` headers). Up to 16 stages
 are allowed, and a parallel group is capped at 8 agents.
 
 Typing `#` at the start of an empty input opens autocomplete listing every
-pinned agent with its kind badge, description and source, plus a built-in
+pinned agent with its mode badge, description and source, plus a built-in
 `pi.dev [base]` row that inserts `#none`. It keeps completing after `[`, `>` and
 `,` inside a bracket. `#` is an unambiguous prefix: input that starts with `#`
 but does not parse is reported in the UI and **not** forwarded to the model, so
@@ -111,18 +113,21 @@ gated agent refuses with the same message. Only interactive input is
 intercepted; RPC and extension-injected input are untouched, and directives are
 disabled by `--mx-pi-agents-disable` along with the tool.
 
-### Agent kinds
+### Prompt modes and visibility
 
-Every definition has a `kind` in frontmatter. It is optional and defaults to
-`main`.
+Every definition can set `system_prompt` in frontmatter. It is optional and
+defaults to `append`. Two booleans control where a definition may run:
+`sub_agent_only` (only as a child) and `main_agent_only` (only in the main
+session). Both default to `false`, and setting both to `true` drops the
+definition as invalid.
 
-| `kind` | `#name` | As a child (tool / `#[…]`) | Prompt effect |
+| Frontmatter | `#name` | As a child (tool / `#[…]`) | Prompt effect |
 | --- | --- | --- | --- |
-| `persona` | switches the main session, **replacing** the default prompt prefix | **refused** | body replaces the prompt preamble; pi's rules, docs, project context and cwd sections stay |
-| `main` | switches the main session, **appending** to the system prompt | allowed | body appends as an addendum |
-| `sub` | not switchable; `#name <task>` delegates | allowed | body is the child prompt (runtime header + body) |
+| `system_prompt: replace` | switches the main session, **replacing** the default prompt prefix | allowed unless `main_agent_only: true` | body replaces the prompt preamble; pi's rules, docs, project context and cwd sections stay |
+| `system_prompt: append` | switches the main session, **appending** to the system prompt | allowed unless `main_agent_only: true` | body appends as an addendum |
+| `sub_agent_only: true` | not switchable; `#name <task>` delegates | allowed | body is the child prompt (runtime header + body) |
 
-A `persona`/`main` definition can set `delegate: true` to keep the
+A main-session definition can set `delegate: true` to keep the
 `mx_pi_agent` tool active after the switch, so an orchestrator can call
 specialists in sequence. The flag unions `mx_pi_agent` into the preset (the
 declared `tools`, or the current active set when `tools` is absent); if the tool
@@ -147,14 +152,15 @@ changes.
 A switch is scoped to the session. It is persisted as a non-context custom
 entry and re-applied when the session is resumed (the prompt is always
 re-derived; the preset is only re-applied when the runtime still reflects the
-switch). The active switch is shown in the footer as `persona:<name>` or
-`main:<name>`.
+switch). The active switch is shown in the footer as `replace:<name>` or
+`append:<name>`.
 
 ```markdown
 ---
 name: reviewer
 description: Review a diff for correctness and security
-kind: persona
+system_prompt: replace
+main_agent_only: true
 thinking: medium
 ---
 
@@ -221,12 +227,12 @@ this bus, so it publishes nothing.
 | `planner` | read, grep, find, ls | Ordered implementation plan with risks and verification steps |
 | `reviewer` | read, grep, find, ls | Defect-focused code review, severity-ranked |
 | `builder` | read, grep, find, ls, edit, write, bash | Scoped implementation with tests and self-verification |
-| `socrates` | none (persona) | Socratic questioning of a problem with a chosen number of questions; proposes no answers |
+| `socrates` | none (main-only, replace) | Socratic questioning of a problem with a chosen number of questions; proposes no answers |
 | `product-builder` | read, grep, find, ls + delegation | Orchestrates explorer → planner → builder → reviewer through a task and reports a commit message and PR description |
 | `verifier` | read, grep, find, ls, bash | Runs the test suite, lint and typecheck and reports raw output as evidence; never edits |
 | `security-reviewer` | read, grep, find, ls | Audits a change against the trust boundaries and `SECURITY.md` invariants; severity-ranked findings |
 
-`product-builder` is a `main`-kind orchestrator with `delegate: true`: switching
+`product-builder` is an append-mode orchestrator with `delegate: true`: switching
 to it with `#product-builder <task>` keeps `mx_pi_agent` active while narrowing
 the other tools to read-only, so it can direct specialists but cannot modify the
 tree itself. It only emits the commit message, PR title and PR description; it
@@ -239,9 +245,9 @@ report until it is fixed and re-reviewed.
 
 `builder` is the only bundled agent with write access and a shell; its `bash`
 runs under `sandbox: os`, and every bundled file tool is path-confined to the
-run scope. `socrates` is the bundled `persona` with no tools, skills or project
-context at all: switch to it with `#socrates`, describe a problem, and choose a
-question depth of `1-3`, `3-5`, `7-9` or `10-12`.
+run scope. `socrates` is the bundled main-only, replace-mode agent with no
+tools, skills or project context at all: switch to it with `#socrates`, describe
+a problem, and choose a question depth of `1-3`, `3-5`, `7-9` or `10-12`.
 
 ## Writing an agent
 
@@ -271,10 +277,12 @@ You are a review agent. Report findings as a list, most severe first.
 | --- | --- | --- | --- |
 | `name` | yes | `[a-z0-9][a-z0-9_-]{0,63}` | Identity; also the `agent` value in tool calls. `none` is reserved. The canonical form is kebab-case for multi-word names (e.g. `product-builder`), and the definition file MUST be named `<name>.md` or the definition is dropped at discovery with a warning |
 | `description` | yes | ≤ 512 chars | Shown in the roster |
-| `kind` | no | `main` (default), `persona`, `sub` | What a bare `#name` does. See [agent kinds](#agent-kinds) |
+| `system_prompt` | no | `append` (default), `replace` | How the body mutates the main system prompt. See [prompt modes](#prompt-modes) |
+| `sub_agent_only` | no | `false` (default), `true` | Only usable as a child (tool, `#[…]`, or delegation). Mutually exclusive with `main_agent_only` |
+| `main_agent_only` | no | `false` (default), `true` | Only usable in the main session; refused as a child. Mutually exclusive with `sub_agent_only` |
 | `tools` | no | list of tool names | **Absent ≠ empty.** `[]` means no tools |
-| `delegate` | no | `false` (default), `true` | Main-session only: keep `mx_pi_agent` active across a `persona`/`main` switch. Ignored with a warning on `sub` |
-| `skills` | no | list of skill names | Main-session (`persona`/`main`) skill allow-list. Absent = all loaded skills; `[]` = none; unknown names match nothing |
+| `delegate` | no | `false` (default), `true` | Main-session only: keep `mx_pi_agent` active across a main-session switch. Ignored with a warning on sub-agent-only definitions |
+| `skills` | no | list of skill names | Main-session skill allow-list. Absent = all loaded skills; `[]` = none; unknown names match nothing |
 | `context_files` | no | list of paths | Main-session project-context allow-list. An entry matches the absolute path, the cwd-relative path or the basename. Absent = all loaded files; `[]` = none |
 | `tools_inheritance` | no | `none` (default), `parent` | Ignored when `tools` is present |
 | `scope` | no | list of paths | Directory roots this agent may touch. Absent = the run's cwd; `[]` is a refusal. Must be beneath the config ceiling and below cwd |
@@ -380,6 +388,24 @@ ceiling, or that does not resolve to an existing directory refuses the run.
 
 A corrupt config file falls back to defaults with a diagnostic; it never blocks
 a session.
+
+### Default persona
+
+`defaultPersona` names a main-session definition to apply automatically at
+session start. It is registered with `@rennis23/mx-pi-settings` and stored in
+the central namespaced settings store (not the local JSON above), so it is
+shared with the other `mx-pi-` extensions:
+
+```bash
+pi --mx-pi-settings-set 'mx-pi-agents.defaultPersona=socrates'
+```
+
+An empty value (the default) means plain pi. The value is read at session start
+and applied only when no switch was rehydrated from the branch. An unknown name
+notifies and stays plain; a gated name goes through the approval flow.
+
+`agentPaths` intentionally stays in the local JSON (there is no settings field
+for a path list); only `defaultPersona` is exposed to the hub.
 
 ### Flags
 

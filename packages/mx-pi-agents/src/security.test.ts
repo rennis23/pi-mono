@@ -611,8 +611,9 @@ describe("invariant 11: a run cannot touch a path outside its granted scope", ()
 });
 
 describe("invariant 12: a main-prompt override comes only from a pinned, re-hashed definition", () => {
-	it("plans the switch prompt from the pinned body, not the file", () => {
-		const agent = makeAgent({ name: "p", agentKind: "persona", body: "PINNED_BODY" });
+	it("plans the switch from the pinned definition, not the file", () => {
+		const agent = makeAgent({ name: "p", systemPrompt: "replace", mainAgentOnly: true, body: "PINNED_BODY" });
+		expect(verifyPinned(agent).ok).toBe(true);
 		const outcome = planSwitch(agent, {
 			availableTools: ["read"],
 			currentTools: ["read"],
@@ -620,13 +621,16 @@ describe("invariant 12: a main-prompt override comes only from a pinned, re-hash
 		});
 		expect(outcome.ok).toBe(true);
 		if (!outcome.ok) return;
-		expect(outcome.plan.prompt.body).toBe("PINNED_BODY");
+		// The prompt body is read from the pinned definition at apply time, so the
+		// plan itself carries no body that a mutated file could have influenced.
+		expect(outcome.plan.mode).toBe("replace");
+		expect(agent.definition.body).toBe("PINNED_BODY");
 	});
 
 	it("re-hashes per turn so a mid-session edit is detected", () => {
-		const agent = makeAgent({ name: "p", agentKind: "persona", body: "SAFE" });
+		const agent = makeAgent({ name: "p", systemPrompt: "replace", mainAgentOnly: true, body: "SAFE" });
 		expect(verifyPinned(agent).ok).toBe(true);
-		mutateAgentFile(agent, "---\nname: p\ndescription: p description\nkind: persona\n---\n\nEVIL\n");
+		mutateAgentFile(agent, "---\nname: p\ndescription: p description\nsystem_prompt: replace\n---\n\nEVIL\n");
 		const verified = verifyPinned(agent);
 		expect(verified.ok).toBe(false);
 		if (verified.ok) return;
@@ -647,25 +651,27 @@ describe("invariant 13: #none restores the exact baseline or reports what it cou
 	});
 });
 
-describe("invariant 14: a persona can never run as a child", () => {
-	it("refuses a persona in planRun before any session exists", () => {
-		const agent = makeAgent({ name: "p", agentKind: "persona", tools: ["read"] });
+describe("invariant 14: a main-agent-only definition can never run as a child", () => {
+	it("refuses a main-agent-only agent in planRun before any session exists", () => {
+		const agent = makeAgent({ name: "p", systemPrompt: "replace", mainAgentOnly: true, tools: ["read"] });
 		const outcome = planRun(agent, "task", makeSessionContext({ availableTools: ["read"] }));
 		expect(outcome.ok).toBe(false);
 		if (outcome.ok) return;
-		expect(outcome.refusal.reason).toBe("persona-child");
+		expect(outcome.refusal.reason).toBe("main-agent-only");
 		expect(outcome.refusal.message).toContain("main session");
 	});
 });
 
-describe("invariant 15: kind parsing is total and fail-closed", () => {
-	it("defaults to main, drops unknown kinds and reserves none", () => {
+describe("invariant 15: system_prompt parsing is total and fail-closed", () => {
+	it("defaults to append, drops unknown modes and reserves none", () => {
 		const absent = parseAgentDefinition("---\nname: a\ndescription: d\n---\nbody");
 		expect(absent.ok).toBe(true);
 		if (!absent.ok) return;
-		expect(absent.definition.kind).toBe("main");
+		expect(absent.definition.systemPrompt).toBe("append");
+		expect(absent.definition.subAgentOnly).toBe(false);
+		expect(absent.definition.mainAgentOnly).toBe(false);
 
-		const unknown = parseAgentDefinition("---\nname: a\ndescription: d\nkind: sys\n---\nbody");
+		const unknown = parseAgentDefinition("---\nname: a\ndescription: d\nsystem_prompt: sys\n---\nbody");
 		expect(unknown.ok).toBe(false);
 
 		const reserved = parseAgentDefinition("---\nname: none\ndescription: d\n---\nbody");
@@ -675,13 +681,13 @@ describe("invariant 15: kind parsing is total and fail-closed", () => {
 
 describe("invariant 16: switch-derived UI text is control-character stripped", () => {
 	it("strips a hostile name from the switch notice, roster and autocomplete", () => {
-		const hostile = makeAgent({ name: "evil\u0007name", agentKind: "persona" });
-		const notice = formatSwitchNotice(hostile.definition.name, "persona");
+		const hostile = makeAgent({ name: "evil\u0007name", systemPrompt: "replace", mainAgentOnly: true });
+		const notice = formatSwitchNotice(hostile.definition.name, "replace");
 		const roster = renderRosterLines(
 			[
 				{
 					name: `evil\u0007name`,
-					kind: "persona",
+					kind: "replace",
 					source: "global",
 					trusted: true,
 					hash: "h",
@@ -701,23 +707,25 @@ describe("invariant 16: switch-derived UI text is control-character stripped", (
 });
 
 describe("invariant 17: a main-session switch never alters a child plan", () => {
-	it("plans a main-kind child with the unchanged child policy contract", () => {
-		const agent = makeAgent({ name: "m", agentKind: "main", tools: ["read"] });
+	it("plans an append-mode child with the unchanged child policy contract", () => {
+		const agent = makeAgent({ name: "m", systemPrompt: "append", tools: ["read"] });
 		const outcome = planRun(agent, "task", makeSessionContext({ availableTools: ["read"] }));
 		expect(outcome.ok).toBe(true);
 		if (!outcome.ok) return;
 		expect(outcome.plan.tools).toEqual(["read"]);
 		// The switch module only decides main-session runtime state; child grants
 		// still come from the policy module's total contract.
-		expect(dispatchDirective({ name: "m", kind: "main", hasTask: true })).toEqual({ action: "switch", kind: "main" });
+		expect(
+			dispatchDirective({ name: "m", definition: { systemPrompt: "append", subAgentOnly: false }, hasTask: true }),
+		).toEqual({ action: "switch", mode: "append" });
 	});
 });
 
 describe("invariant 18: delegate is a main-session verb", () => {
 	it("never places mx_pi_agent in a child grant", () => {
-		// A main-kind definition with delegate: true still runs as a leaf child:
+		// An append-mode definition with delegate: true still runs as a leaf child:
 		// the flag is read only by planSwitch (main session), never by policy.
-		const agent = makeAgent({ name: "o", agentKind: "main", tools: ["read"], delegate: true });
+		const agent = makeAgent({ name: "o", systemPrompt: "append", tools: ["read"], delegate: true });
 		const outcome = planRun(agent, "task", makeSessionContext({ availableTools: ["read", "mx_pi_agent"] }));
 		expect(outcome.ok).toBe(true);
 		if (!outcome.ok) return;
@@ -726,7 +734,7 @@ describe("invariant 18: delegate is a main-session verb", () => {
 	});
 
 	it("still refuses an explicit spawn grant even with delegate", () => {
-		const agent = makeAgent({ name: "o", agentKind: "main", tools: ["read", "mx_pi_agent"], delegate: true });
+		const agent = makeAgent({ name: "o", systemPrompt: "append", tools: ["read", "mx_pi_agent"], delegate: true });
 		const outcome = planRun(agent, "task", makeSessionContext({ availableTools: ["read", "mx_pi_agent"] }));
 		expect(outcome.ok).toBe(false);
 		if (outcome.ok) return;

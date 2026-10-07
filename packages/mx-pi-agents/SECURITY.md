@@ -169,7 +169,7 @@ silently unsandboxed.
 
 ### B6 — main-session switches are pinned and fail-closed (invariants 12–18)
 
-A `persona`/`main` definition can mutate the **main** session's system prompt,
+A main-session definition can mutate the **main** session's system prompt,
 active tools, model and thinking level. The same pinning guarantees apply:
 
 - **12 — override provenance.** A main-session prompt override comes only from
@@ -182,12 +182,14 @@ active tools, model and thinking level. The same pinning guarantees apply:
   model, thinking) and the base prompt. A baseline value that no longer resolves
   is skipped with a warning; the rest is still restored and the base prompt is
   always reached.
-- **14 — personas never become children.** `planRun` refuses a `persona` before
-  any child session is created, so the tool, parallel, chain and pipeline paths
-  all refuse alike.
-- **15 — kind parsing is total.** Absent `kind` means `main`; an unknown or
-  non-string kind drops the definition with a diagnostic; the reserved name
-  `none` drops the definition so the reset can never be shadowed.
+- **14 — main-only definitions never become children.** `planRun` refuses a
+  `main_agent_only: true` definition before any child session is created, so the
+  tool, parallel, chain and pipeline paths all refuse alike.
+- **15 — prompt-mode parsing is total.** Absent `system_prompt` means `append`;
+  an unknown or non-string mode drops the definition with a diagnostic; a
+  definition that sets both `sub_agent_only` and `main_agent_only` is dropped as
+  mutually exclusive; the reserved name `none` drops the definition so the reset
+  can never be shadowed.
 - **16 — presentation.** Switch-derived UI text (status, notifications, roster,
   autocomplete badges) is control-character stripped like all other
   definition-derived text.
@@ -196,8 +198,8 @@ active tools, model and thinking level. The same pinning guarantees apply:
   contract; a switch can never widen a child's tool set.
 - **18 — `delegate` is a main-session verb.** A `delegate: true` definition
   keeps `mx_pi_agent` in the active main-session tool set, so an orchestrator
-  persona can call specialists in sequence. It is read only by `planSwitch`,
-  which runs only for `kind: persona | main` in the main session. No code path
+  can call specialists in sequence. It is read only by `planSwitch`, which runs
+  only for main-session definitions in the main session. No code path
   lets `delegate` place `mx_pi_agent` in a child grant; a child started from a
   delegating orchestrator has no spawn-capable tool (invariant 8 stands).
 
