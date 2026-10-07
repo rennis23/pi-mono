@@ -31,6 +31,7 @@ import type {
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteProvider, TUI } from "@earendil-works/pi-tui";
 import { matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { registerSettings } from "@rennis23/mx-pi-settings";
 import { Type } from "typebox";
 import { completionItems, directiveContext, toCompletionSource } from "./src/complete.js";
 import { type AgentsConfig, createConfigStore } from "./src/config.js";
@@ -90,6 +91,7 @@ import {
 	type SwitchBaseline,
 	type SwitchEntryData,
 	type SwitchPlan,
+	type SystemPromptMode,
 	type ThinkingLevel,
 	zeroUsage,
 } from "./src/types.js";
@@ -100,10 +102,14 @@ const CHILD_MARKER_VALUE = "1";
 const SWITCH_ENTRY_TYPE = "mx-pi-agents.switch";
 
 /** Status key publishing the active main-session persona in the native footer. */
-const PERSONA_STATUS_KEY = "mx-pi-agents-persona";
+const STATUS_KEY = "mx-pi-agents";
 
 /** Custom message type for a `#` directive result appended to the transcript. */
 const DIRECTIVE_MESSAGE = "mx-pi-agents.directive";
+
+interface PersonasSettings {
+	defaultPersona: string;
+}
 
 /**
  * Stack a `#`-directive autocomplete provider on top of the built-in one.
@@ -335,7 +341,11 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 	/** Baseline captured before the first switch of the session; survives switches. */
 	let baseline: SwitchBaseline | undefined;
 	/** Active main-session switch, when one is applied. */
-	let activeSwitch: { name: string; kind: "persona" | "main"; applied: SwitchApplied } | undefined;
+	let activeSwitch: { name: string; mode: SystemPromptMode; applied: SwitchApplied } | undefined;
+	/** Latest `defaultPersona` value from the settings hub. */
+	let defaultPersona = "";
+	/** Session context for best-effort live settings re-application. */
+	let sessionCtx: ExtensionContext | undefined;
 	/** Guards the single auto-deactivation notification per switch. */
 	let switchDeactivatedNotified = false;
 
@@ -452,17 +462,17 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 				/* ignore */
 			}
 		}
-		activeSwitch = { name: plan.name, kind: plan.kind, applied: plan.applied };
+		activeSwitch = { name: plan.name, mode: plan.mode, applied: plan.applied };
 		switchDeactivatedNotified = false;
 		try {
-			ctx.ui.setStatus(PERSONA_STATUS_KEY, `${plan.kind}:${plan.name}`);
+			ctx.ui.setStatus(STATUS_KEY, `${plan.mode}:${plan.name}`);
 		} catch {
 			/* ignore */
 		}
 		try {
 			pi.appendEntry(SWITCH_ENTRY_TYPE, {
 				name: plan.name,
-				kind: plan.kind,
+				mode: plan.mode,
 				baseline,
 				applied: plan.applied,
 				switchedAt: Date.now(),
@@ -507,7 +517,7 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 		activeSwitch = undefined;
 		switchDeactivatedNotified = false;
 		try {
-			ctx.ui.setStatus(PERSONA_STATUS_KEY, undefined);
+			ctx.ui.setStatus(STATUS_KEY, undefined);
 		} catch {
 			/* ignore */
 		}
@@ -529,7 +539,7 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 	function deactivateSwitch(ctx: ExtensionContext, message: string): void {
 		activeSwitch = undefined;
 		try {
-			ctx.ui.setStatus(PERSONA_STATUS_KEY, undefined);
+			ctx.ui.setStatus(STATUS_KEY, undefined);
 		} catch {
 			/* ignore */
 		}
@@ -580,10 +590,10 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 				activeSwitch = undefined;
 				return;
 			}
-			activeSwitch = { name: decision.name, kind: decision.kind, applied: decision.applied };
+			activeSwitch = { name: decision.name, mode: decision.mode, applied: decision.applied };
 			switchDeactivatedNotified = false;
 			try {
-				ctx.ui.setStatus(PERSONA_STATUS_KEY, `${decision.kind}:${decision.name}`);
+				ctx.ui.setStatus(STATUS_KEY, `${decision.mode}:${decision.name}`);
 			} catch {
 				/* ignore */
 			}
@@ -667,6 +677,79 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 		}
 		return { ok: true };
 	}
+
+	/**
+	 * Verify the pinned hash, plan the switch fail-closed and apply it. Returns
+	 * `true` when the switch was applied and `false` when it was refused.
+	 */
+	async function switchTo(agent: PinnedAgent, ctx: ExtensionContext): Promise<boolean> {
+		const verified = verifyPinned(agent);
+		if (!verified.ok) {
+			ctx.ui.notify(`mx-pi-agents: ${verified.message}`, "warning");
+			return false;
+		}
+		const planned = planSwitch(agent, {
+			availableTools: mainToolNames(),
+			currentTools: pi.getActiveTools(),
+			isModelAvailable: (label) => modelAvailable(ctx, label),
+		});
+		if (!planned.ok) {
+			ctx.ui.notify(`mx-pi-agents: ${planned.refusal}`, "warning");
+			return false;
+		}
+		await applySwitchPlan(ctx, planned.plan);
+		return true;
+	}
+
+	/**
+	 * Apply the configured `defaultPersona` at session start. Empty means plain
+	 * pi; an unknown name notifies and stays plain; a gated name runs the
+	 * approval flow.
+	 */
+	async function applyDefaultPersona(ctx: ExtensionContext): Promise<void> {
+		const name = defaultPersona.trim();
+		if (name.length === 0) return;
+		const agent = roster.find((candidate) => candidate.definition.name === name);
+		if (agent === undefined) {
+			ctx.ui.notify(`mx-pi-agents: default persona "#${name}" is unknown; staying on plain pi.`, "warning");
+			return;
+		}
+		const decision = await authorize(agent, ctx);
+		if (!decision.ok) {
+			ctx.ui.notify(`mx-pi-agents: ${decision.refusal}`, "warning");
+			return;
+		}
+		if (await switchTo(agent, ctx)) {
+			ctx.ui.notify(
+				`mx-pi-agents: ${formatSwitchNotice(agent.definition.name, agent.definition.systemPrompt)}`,
+				"info",
+			);
+		}
+	}
+
+	// The settings hub controls `defaultPersona`. The handle is read at session
+	// start so a stored value applies even when the hub never calls `onChange`;
+	// the callback re-applies a live edit when a session already exists.
+	const settings = registerSettings<PersonasSettings>(pi, {
+		id: "mx-pi-agents",
+		title: "Agents",
+		description: "Default main-session persona applied at session start.",
+		fields: [
+			{
+				key: "defaultPersona",
+				label: "Default persona",
+				description: "Name of the agent definition to apply at session start.",
+				type: "string",
+				default: "",
+				placeholder: "e.g. socrates",
+				maxLength: 64,
+			},
+		],
+		onChange(values) {
+			defaultPersona = values.defaultPersona;
+			if (sessionCtx !== undefined) void applyDefaultPersona(sessionCtx);
+		},
+	});
 
 	function runners(): RunnerRegistry {
 		return { process: inProcess, subprocess };
@@ -802,8 +885,15 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 	);
 
 	pi.on("session_start", async (_event, ctx) => {
+		sessionCtx = ctx;
+		try {
+			defaultPersona = settings.get("defaultPersona");
+		} catch {
+			defaultPersona = "";
+		}
 		pin(ctx);
 		await rehydrateSwitch(ctx);
+		if (activeSwitch === undefined) await applyDefaultPersona(ctx);
 		overlay.setUICtx(ctx.ui);
 		for (const diagnostic of diagnostics) {
 			if (diagnostic.level === "warning") ctx.ui.notify(`mx-pi-agents: ${diagnostic.message}`, "warning");
@@ -842,7 +932,7 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 			}
 			const options = event.systemPromptOptions;
 			if (!options) return;
-			if (agent.definition.kind === "persona") {
+			if (agent.definition.systemPrompt === "replace") {
 				options.customPrompt = agent.definition.body;
 			} else {
 				options.appendSystemPrompt = [options.appendSystemPrompt, agent.definition.body]
@@ -892,11 +982,19 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 				!directive.pipeline && directive.stages.length === 1 && directive.stages[0].agents.length === 1
 					? directive.stages[0].agents[0]
 					: undefined;
+			const singleAgent =
+				singleName !== undefined ? roster.find((candidate) => candidate.definition.name === singleName) : undefined;
 			const dispatch =
 				singleName !== undefined
 					? dispatchDirective({
 							name: singleName,
-							kind: roster.find((candidate) => candidate.definition.name === singleName)?.definition.kind,
+							definition:
+								singleAgent === undefined
+									? undefined
+									: {
+											systemPrompt: singleAgent.definition.systemPrompt,
+											subAgentOnly: singleAgent.definition.subAgentOnly,
+										},
 							hasTask: directive.task !== undefined,
 						})
 					: undefined;
@@ -944,7 +1042,7 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 					// the task runs under the new persona.
 					return { action: "transform" as const, text: directive.task };
 				}
-				ctx.ui.notify(`mx-pi-agents: ${formatSwitchNotice(planned.plan.name, planned.plan.kind)}`, "info");
+				ctx.ui.notify(`mx-pi-agents: ${formatSwitchNotice(planned.plan.name, planned.plan.mode)}`, "info");
 				return { action: "handled" as const };
 			}
 

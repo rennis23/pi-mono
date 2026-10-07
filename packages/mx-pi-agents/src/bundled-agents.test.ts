@@ -72,10 +72,12 @@ describe("bundled agent artifacts", () => {
 		}
 	});
 
-	it("ships product-builder as a delegating main-kind orchestrator with read-only tools", () => {
+	it("ships product-builder as a delegating append-mode orchestrator with read-only tools", () => {
 		const { agents } = bundledAgents();
 		const pb = agents.find((agent) => agent.definition.name === "product-builder");
-		expect(pb?.definition.kind).toBe("main");
+		expect(pb?.definition.systemPrompt).toBe("append");
+		expect(pb?.definition.subAgentOnly).toBe(false);
+		expect(pb?.definition.mainAgentOnly).toBe(false);
 		expect(pb?.definition.delegate).toBe(true);
 		expect(pb?.definition.tools).toEqual(["read", "grep", "find", "ls"]);
 		// Delegation is declared via the flag, never by granting the spawn tool.
@@ -101,10 +103,12 @@ describe("bundled agent artifacts", () => {
 		expect(securityReviewer?.definition.tools ?? []).not.toContain("bash");
 	});
 
-	it("ships socrates as a persona with no tools, skills or context files", () => {
+	it("ships socrates as a replace-mode main-only agent with no tools, skills or context files", () => {
 		const { agents } = bundledAgents();
 		const socrates = agents.find((agent) => agent.definition.name === "socrates");
-		expect(socrates?.definition.kind).toBe("persona");
+		expect(socrates?.definition.systemPrompt).toBe("replace");
+		expect(socrates?.definition.mainAgentOnly).toBe(true);
+		expect(socrates?.definition.subAgentOnly).toBe(false);
 		expect(socrates?.definition.tools).toEqual([]);
 		expect(socrates?.definition.skills).toEqual([]);
 		expect(socrates?.definition.contextFiles).toEqual([]);

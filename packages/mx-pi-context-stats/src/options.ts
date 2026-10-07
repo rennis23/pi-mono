@@ -2,9 +2,9 @@
  * Runtime options for mx-pi-context-stats.
  *
  * Options are plain data (no pi types) so they can be validated and tested
- * without loading pi. They are persisted in the extension's config file
- * (`<agentDir>/extensions/mx-pi-context-stats.json`) and edited via the
- * `/mx-pi-settings` command; the widget re-reads them on every render.
+ * without loading pi. The user-facing subset is persisted by the
+ * `@rennis23/mx-pi-settings` hub; other runtime defaults remain local to this
+ * extension. The widget re-reads the current options on every render.
  */
 
 import type { StatsPlacement } from "./types.js";
@@ -20,7 +20,7 @@ export interface ContextStatsOptions {
 	showSubagents: boolean;
 	/** Render burn rate / projection / cache ratio rows. */
 	showHealth: boolean;
-	/** Master switch toggled by `/mx-pi-settings toggle`. */
+	/** Master switch exposed through the registered mx-pi-settings fields. */
 	visible: boolean;
 	placement: StatsPlacement;
 	/**
@@ -48,8 +48,8 @@ export const SUBAGENT_ROWS_MIN = 0;
 export const SUBAGENT_ROWS_MAX = 20;
 
 /**
- * Coerce an arbitrary value (typically a `/mx-pi-settings rows <n>` argument) into a
- * bounded integer, falling back to `fallback` when it is not a finite number.
+ * Coerce an arbitrary value into a bounded integer, falling back to `fallback`
+ * when it is not a finite number.
  */
 export function clampInt(raw: unknown, min: number, max: number, fallback: number): number {
 	const n = typeof raw === "number" ? raw : Number.parseInt(String(raw ?? ""), 10);

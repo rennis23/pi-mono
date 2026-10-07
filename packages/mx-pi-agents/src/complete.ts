@@ -7,7 +7,7 @@
  */
 
 import { sanitizeUiText } from "./security.js";
-import type { AgentKind, PinnedAgent } from "./types.js";
+import type { PinnedAgent, SystemPromptMode } from "./types.js";
 
 /** One autocomplete row. Structurally an `AutocompleteItem`. */
 export interface CompletionItem {
@@ -22,7 +22,8 @@ export interface CompletionSource {
 	description: string;
 	source: string;
 	trusted: boolean;
-	kind: AgentKind;
+	/** Prompt mode for a main-session switch; `sub` marks a sub-agent-only definition. */
+	kind: SystemPromptMode | "sub";
 }
 
 /** Where in a directive the cursor sits, and the text the popup filters on. */
@@ -40,7 +41,7 @@ export function toCompletionSource(agents: readonly PinnedAgent[]): CompletionSo
 		description: agent.definition.description,
 		source: agent.source.kind,
 		trusted: agent.source.trusted,
-		kind: agent.definition.kind,
+		kind: agent.definition.subAgentOnly ? "sub" : agent.definition.systemPrompt,
 	}));
 }
 

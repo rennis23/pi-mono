@@ -7,19 +7,23 @@ import { createHarness, mockTheme } from "./test/harness.js";
 
 /** Timestamps are fake so tok/s and durations are deterministic. */
 const T0 = new Date("2026-01-01T00:00:00.000Z").getTime();
-
-/**
- * Every test gets a throwaway PI_CODING_AGENT_DIR so config reads/writes land
- * in a temp folder instead of the real ~/.pi/agent/extensions.
- */
 let agentDir: string;
 
 function configPath(): string {
-	return join(agentDir, "extensions", "mx-pi-context-stats.json");
+	return join(agentDir, "extensions", "mx-pi-settings.json");
 }
 
 function readSavedConfig(): Record<string, unknown> {
-	return JSON.parse(readFileSync(configPath(), "utf8"));
+	if (!existsSync(configPath())) return {};
+	const document = JSON.parse(readFileSync(configPath(), "utf8")) as {
+		values: Record<string, Record<string, unknown>>;
+	};
+	return document.values["mx-pi-context-stats"] ?? {};
+}
+
+function seedConfig(values: Record<string, unknown>): void {
+	mkdirSync(dirname(configPath()), { recursive: true });
+	writeFileSync(configPath(), JSON.stringify({ version: 1, values: { "mx-pi-context-stats": values } }), "utf8");
 }
 
 beforeEach(() => {
@@ -34,8 +38,10 @@ afterEach(() => {
 
 function boot(options: Parameters<typeof createHarness>[0] = {}) {
 	const harness = createHarness({ usage: { tokens: 8000, contextWindow: 128_000 }, ...options });
+	const registrations: unknown[] = [];
+	harness.events.on("mx-pi-settings:register", (payload) => registrations.push(payload));
 	contextStats(harness.pi);
-	return harness;
+	return { ...harness, registrations };
 }
 
 /** One assistant turn carrying usage. */
@@ -64,18 +70,73 @@ describe("mx-pi-context-stats extension", () => {
 		vi.useRealTimers();
 	});
 
-	it("registers the widget below the editor and the /mx-pi-settings command", async () => {
+	it("registers its settings with the hub and keeps only the summary command", async () => {
 		const harness = boot();
 		await harness.emit("session_start");
 
 		expect(harness.ui.setWidget).toHaveBeenCalledTimes(1);
-		const [key, , opts] = harness.ui.setWidget.mock.calls[0];
-		expect(key).toBe("mx-pi-context-stats");
-		expect(opts).toEqual({ placement: "belowEditor" });
-		expect(harness.commands.has("mx-pi-settings")).toBe(true);
-		expect(harness.commands.has("mx-pi-context-stats")).toBe(false);
-		expect(harness.flags.has("mx-pi-context-stats-rows")).toBe(true);
-		expect(harness.flags.has("mx-pi-context-stats-hide")).toBe(true);
+		expect(harness.ui.setWidget.mock.calls[0][0]).toBe("mx-pi-context-stats");
+		expect(harness.ui.setWidget.mock.calls[0][2]).toEqual({ placement: "belowEditor" });
+		expect(harness.commands.has("mx-pi-context-stats")).toBe(true);
+		expect(harness.commands.has("mx-pi-settings")).toBe(false);
+		expect(harness.flags.has("mx-pi-context-stats-rows")).toBe(false);
+		expect(harness.registrations).toHaveLength(1);
+		const registration = harness.registrations[0] as { spec: { id: string; fields: unknown[] } };
+		expect(registration.spec.id).toBe("mx-pi-context-stats");
+		expect(registration.spec.fields).toEqual([
+			{
+				key: "visible",
+				label: "Widget",
+				description: "Show or hide the context stats widget.",
+				type: "boolean",
+				default: true,
+			},
+			{
+				key: "historyRows",
+				label: "History rows",
+				description: "Number of completed prompt rows to retain.",
+				type: "number",
+				default: 5,
+				min: 1,
+				max: 20,
+				integer: true,
+			},
+			{
+				key: "subagentRows",
+				label: "Subagent rows",
+				description: "Maximum live/completed subagent rows to render.",
+				type: "number",
+				default: 4,
+				min: 0,
+				max: 20,
+				integer: true,
+			},
+			{
+				key: "showSubagents",
+				label: "Subagent section",
+				description: "Show tool progress and usage for detected subagents.",
+				type: "boolean",
+				default: true,
+			},
+			{
+				key: "showHealth",
+				label: "Health metrics",
+				description: "Show burn rate, projection, and cache ratio.",
+				type: "boolean",
+				default: true,
+			},
+			{
+				key: "placement",
+				label: "Placement",
+				description: "Choose where the widget appears relative to the editor.",
+				type: "select",
+				default: "belowEditor",
+				options: [
+					{ value: "aboveEditor", label: "Above editor" },
+					{ value: "belowEditor", label: "Below editor" },
+				],
+			},
+		]);
 	});
 
 	it("wires every lifecycle event it needs", async () => {
@@ -97,102 +158,108 @@ describe("mx-pi-context-stats extension", () => {
 		}
 	});
 
-	it("renders a prompt row after a completed prompt", async () => {
+	it("renders a prompt row and publishes live metrics to the footer", async () => {
 		const harness = boot();
 		await harness.emit("session_start");
 		await runPrompt(harness);
 
-		const lines = harness.render(160);
-		expect(lines.join("\n")).toContain("#1");
-		expect(lines.join("\n")).toContain("ctx:8.0k/128k");
-		expect(lines.join("\n")).toContain("$0.004");
-		expect(lines.join("\n")).toContain("300tok/s");
-		expect(lines.join("\n")).toContain("5.0s");
+		const lines = harness.render(160).join("\n");
+		expect(lines).toContain("#1");
+		expect(lines).toContain("ctx:8.0k/128k");
+		expect(lines).toContain("$0.004");
+		expect(lines).toContain("300tok/s");
+		expect(lines).toContain("5.0s");
+		expect(harness.ui.setStatus.mock.calls.at(-1)).toEqual(["mx-pi-context-stats", "300tok/s  5.0s  ctx:6.3%"]);
 	});
 
-	it("publishes tok/s, duration and context to the footer status row", async () => {
+	it("loads namespaced options from the central store", async () => {
+		seedConfig({ historyRows: 2, visible: false });
 		const harness = boot();
 		await harness.emit("session_start");
-		await runPrompt(harness);
+		for (let i = 0; i < 4; i++) await runPrompt(harness);
 
-		const status = harness.ui.setStatus.mock.calls.at(-1);
-		expect(status?.[0]).toBe("mx-pi-context-stats");
-		expect(status?.[1]).toBe("300tok/s  5.0s  ctx:6.3%");
-	});
-
-	it("clears the status row on a new session", async () => {
-		const harness = boot();
-		await harness.emit("session_start");
-		await runPrompt(harness);
-		await harness.emit("session_start");
-
-		expect(harness.ui.setStatus.mock.calls.at(-1)?.[1]).toBeUndefined();
 		expect(harness.render(160)).toEqual([]);
+		const registration = harness.registrations[0] as { io: { read(): Record<string, unknown> } };
+		expect(registration.io.read()).toMatchObject({ historyRows: 2, visible: false });
 	});
 
-	it("keeps a rolling history bounded by historyRows", async () => {
+	it("applies setting writes from the hub immediately and persists them centrally", async () => {
 		const harness = boot();
 		await harness.emit("session_start");
-		for (let i = 0; i < 6; i++) await runPrompt(harness);
+		await runPrompt(harness);
+		const registration = harness.registrations[0] as {
+			io: { write(key: string, value: boolean | number | string): { ok: boolean } };
+		};
 
-		const text = harness.render(160).join("\n");
-		// historyRows default is 5, so only #2..#6 survive.
-		expect(text).toContain("#6");
-		expect(text).not.toContain("#1  ");
+		expect(harness.render(160).length).toBeGreaterThan(0);
+		expect(registration.io.write("visible", false).ok).toBe(true);
+		expect(harness.render(160)).toEqual([]);
+		expect(registration.io.write("placement", "aboveEditor").ok).toBe(true);
+		expect(harness.ui.setWidget.mock.calls.at(-1)?.[2]).toEqual({ placement: "aboveEditor" });
+		expect(readSavedConfig()).toMatchObject({ visible: false, placement: "aboveEditor" });
+	});
+
+	it("applies run-scoped hub overrides without persisting them", async () => {
+		const harness = boot();
+		harness.events.emit("mx-pi-settings:configure", {
+			protocol: 1,
+			assignments: "mx-pi-context-stats.historyRows=2,mx-pi-context-stats.visible=false",
+		});
+		await harness.emit("session_start");
+		for (let i = 0; i < 4; i++) await runPrompt(harness);
+
+		expect(harness.render(160)).toEqual([]);
+		expect(readSavedConfig()).toEqual({});
 	});
 
 	it("uses the model's context window when pi cannot report usage", async () => {
 		const harness = createHarness({ contextWindow: 200_000, usage: undefined });
 		contextStats(harness.pi);
 		await harness.emit("session_start");
-		await runPrompt(harness);
+		await runPrompt(harness as ReturnType<typeof boot>);
 
 		expect(harness.render(160).join("\n")).toContain("200k");
 	});
 
-	it("adopts a new context window on model_select", async () => {
+	it("adopts a new context window on model_select and survives unknown usage", async () => {
 		const harness = createHarness({ contextWindow: 128_000, usage: undefined });
 		contextStats(harness.pi);
 		await harness.emit("session_start");
 		await harness.emit("model_select", { model: { contextWindow: 200_000 } });
-		await runPrompt(harness);
-
+		await runPrompt(harness as ReturnType<typeof boot>);
 		expect(harness.render(160).join("\n")).toContain("200k");
 	});
 
-	it("survives unknown context usage", async () => {
-		const harness = createHarness({ usage: undefined });
-		contextStats(harness.pi);
-		await harness.emit("session_start");
-
-		await expect(runPrompt(harness)).resolves.toBeUndefined();
-		// Unknown usage is rendered as 0 rather than NaN, and the run completes.
-		expect(harness.render(160).join("\n")).toContain("0.0%");
-	});
-
-	it("restarts the clock when a user turn ends", async () => {
+	it("clears stale status and restarts the clock after a user turn", async () => {
 		const harness = boot();
 		await harness.emit("session_start");
+		await runPrompt(harness);
+		await harness.emit("session_start");
+		expect(harness.ui.setStatus.mock.calls.at(-1)?.[1]).toBeUndefined();
+		expect(harness.render(160)).toEqual([]);
+
 		await harness.emit("agent_start");
 		vi.advanceTimersByTime(10_000);
 		await harness.emit("turn_end", { message: { role: "user" } });
 		vi.advanceTimersByTime(1000);
 		await harness.emit("agent_end");
-
 		expect(harness.render(160).join("\n")).toContain("1.0s");
 	});
 
-	it("marks the snapshot after a compaction", async () => {
+	it("marks the snapshot after a compaction and bounds rolling history", async () => {
 		const harness = boot();
 		await harness.emit("session_start");
 		await harness.emit("session_compact");
 		await runPrompt(harness);
-
 		expect(harness.render(160).join("\n")).toContain("⟳");
+		for (let i = 0; i < 5; i++) await runPrompt(harness);
+		const text = harness.render(160).join("\n");
+		expect(text).toContain("#6");
+		expect(text).not.toContain("#1  ");
 	});
 });
 
-describe("subagent tracking", () => {
+describe("mx-pi-context-stats command and subagent tracking", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		vi.setSystemTime(T0);
@@ -202,11 +269,22 @@ describe("subagent tracking", () => {
 		vi.useRealTimers();
 	});
 
+	it("shows session summaries and rejects settings-like subcommands", async () => {
+		const harness = boot();
+		await harness.emit("session_start");
+		await harness.runCommand("");
+		expect(harness.ui.notify.mock.calls.at(-1)?.[0]).toBe("mx-pi-context-stats: nothing tracked yet");
+		await runPrompt(harness);
+		await harness.runCommand("summary");
+		expect(harness.ui.notify.mock.calls.at(-1)?.[0]).toContain("1 prompt(s) tracked");
+		await harness.runCommand("rows 5");
+		expect(harness.ui.notify.mock.calls.at(-1)).toEqual(["Usage: /mx-pi-context-stats [summary]", "warning"]);
+	});
+
 	it("tracks a spawn_subagent tool call end to end", async () => {
 		const harness = boot();
 		await harness.emit("session_start");
 		await harness.emit("agent_start");
-
 		await harness.emit("tool_execution_start", {
 			toolName: "spawn_subagent",
 			toolCallId: "call-1",
@@ -230,287 +308,28 @@ describe("subagent tracking", () => {
 				},
 			},
 		});
-
 		const text = harness.render(160).join("\n");
 		expect(text).toContain("subagents");
 		expect(text).toContain("✓");
 		expect(text).toContain("Explore");
 		expect(text).toContain("sonnet-4-5");
 		expect(text).toContain("18.0k");
-		expect(text).toContain("500tok/s"); // 2000 output tokens over 4s
+		expect(text).toContain("500tok/s");
 	});
 
-	it("ignores tools that are not subagent spawners", async () => {
+	it("ignores non-subagent tools and shows no empty subagent section", async () => {
 		const harness = boot();
 		await harness.emit("session_start");
 		await harness.emit("tool_execution_start", { toolName: "bash", toolCallId: "x", args: {} });
 		await harness.emit("tool_execution_update", { toolName: "bash", toolCallId: "x", partialResult: {} });
 		await harness.emit("tool_execution_end", { toolName: "bash", toolCallId: "x", isError: false, result: {} });
-
 		expect(harness.render(160)).toEqual([]);
 	});
 
-	it("shows nothing at all when no subagent tool is ever used", async () => {
-		const harness = boot();
-		await harness.emit("session_start");
-		expect(harness.render(160)).toEqual([]);
-	});
-});
-
-describe("/mx-pi-settings command", () => {
-	beforeEach(() => {
-		vi.useFakeTimers();
-		vi.setSystemTime(T0);
-	});
-
-	afterEach(() => {
-		vi.useRealTimers();
-	});
-
-	it("toggles the widget and persists visibility", async () => {
+	it("renders a safe error line when the theme fails and tolerates narrow widths", async () => {
 		const harness = boot();
 		await harness.emit("session_start");
 		await runPrompt(harness);
-		expect(harness.render(160).length).toBeGreaterThan(0);
-
-		await harness.runCommand("toggle");
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings widget hidden", "info");
-		expect(harness.render(160)).toEqual([]);
-		expect(readSavedConfig().visible).toBe(false);
-
-		await harness.runCommand("toggle");
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings widget shown", "info");
-		expect(harness.render(160).length).toBeGreaterThan(0);
-		expect(readSavedConfig().visible).toBe(true);
-	});
-
-	it("applies rows immediately without waiting for the next prompt", async () => {
-		const harness = boot();
-		await harness.emit("session_start");
-		for (let i = 0; i < 5; i++) await runPrompt(harness);
-
-		await harness.runCommand("rows 2");
-		const text = harness.render(160).join("\n");
-		expect(text).toContain("#5");
-		expect(text).toContain("#4");
-		expect(text).not.toContain("#3  ");
-	});
-
-	it("reports and sets history rows", async () => {
-		const harness = boot();
-		await harness.emit("session_start");
-
-		await harness.runCommand("rows");
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings rows: 5", "info");
-
-		await harness.runCommand("rows 8");
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings rows: 8", "info");
-
-		await harness.runCommand("rows 999");
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings rows: 20", "info");
-
-		await harness.runCommand("rows abc");
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings rows: 20", "info");
-
-		expect(readSavedConfig().historyRows).toBe(20);
-	});
-
-	it("reports and sets subagent rows", async () => {
-		const harness = boot();
-		await harness.emit("session_start");
-
-		await harness.runCommand("subagent-rows");
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings subagent-rows: 4", "info");
-
-		await harness.runCommand("subagent-rows 2");
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings subagent-rows: 2", "info");
-		expect(readSavedConfig().subagentRows).toBe(2);
-	});
-
-	it("toggles sections and rejects bad values", async () => {
-		const harness = boot();
-		await harness.emit("session_start");
-
-		await harness.runCommand("subagents off");
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings subagents: off", "info");
-		expect(readSavedConfig().showSubagents).toBe(false);
-
-		await harness.runCommand("subagents maybe");
-		const warning = harness.ui.notify.mock.calls.at(-1);
-		expect(warning?.[1]).toBe("warning");
-
-		await harness.runCommand("health off");
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings health: off", "info");
-		expect(readSavedConfig().showHealth).toBe(false);
-	});
-
-	it("moves the widget, re-registers it and persists the placement", async () => {
-		const harness = boot();
-		await harness.emit("session_start");
-		await harness.runCommand("placement above");
-
-		expect(harness.ui.setWidget).toHaveBeenCalledTimes(2);
-		expect(harness.ui.setWidget.mock.calls.at(-1)?.[2]).toEqual({ placement: "aboveEditor" });
-		expect(readSavedConfig().placement).toBe("aboveEditor");
-
-		await harness.runCommand("placement sideways");
-		expect(harness.ui.notify.mock.calls.at(-1)?.[1]).toBe("warning");
-	});
-
-	it("prints a summary and clears history", async () => {
-		const harness = boot();
-		await harness.emit("session_start");
-		await runPrompt(harness);
-
-		await harness.runCommand("summary");
-		expect(harness.ui.notify.mock.calls.at(-1)?.[0]).toContain("1 prompt(s) tracked");
-
-		await harness.runCommand("reset");
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings history cleared", "info");
-		expect(harness.render(160)).toEqual([]);
-	});
-
-	it("warns on unknown arguments", async () => {
-		const harness = boot();
-		await harness.emit("session_start");
-		await harness.runCommand("nonsense");
-
-		const [message, level] = harness.ui.notify.mock.calls.at(-1) ?? [];
-		expect(level).toBe("warning");
-		expect(message).toContain("Unknown mx-pi-settings argument: nonsense");
-	});
-});
-
-describe("/mx-pi-settings interactive picker", () => {
-	beforeEach(() => {
-		vi.useFakeTimers();
-		vi.setSystemTime(T0);
-	});
-
-	afterEach(() => {
-		vi.useRealTimers();
-	});
-
-	it("opens the picker on bare /mx-pi-settings and applies the chosen action", async () => {
-		const harness = boot();
-		await harness.emit("session_start");
-
-		harness.ui.select.mockResolvedValueOnce("Widget — shown");
-		await harness.runCommand("");
-
-		expect(harness.ui.select).toHaveBeenCalledWith(
-			"mx-pi-settings (mx-pi-context-stats)",
-			expect.arrayContaining(["Widget — shown", "History rows — 5", "Placement — below editor"]),
-		);
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings widget hidden", "info");
-		expect(readSavedConfig().visible).toBe(false);
-	});
-
-	it("asks for a number when editing a numeric option", async () => {
-		const harness = boot();
-		await harness.emit("session_start");
-
-		harness.ui.select.mockResolvedValueOnce("History rows — 5");
-		harness.ui.input.mockResolvedValueOnce("7");
-		await harness.runCommand("");
-
-		expect(harness.ui.input).toHaveBeenCalledWith("History rows", "1-20: 5");
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings historyRows: 7", "info");
-		expect(readSavedConfig().historyRows).toBe(7);
-	});
-
-	it("changes nothing when the picker is dismissed", async () => {
-		const harness = boot();
-		await harness.emit("session_start");
-
-		// Default harness dialogs resolve to undefined (Esc).
-		await harness.runCommand("");
-
-		expect(harness.ui.notify).not.toHaveBeenCalled();
-		expect(existsSync(configPath())).toBe(false);
-	});
-
-	it("reports values without a dialog when UI is unavailable", async () => {
-		const harness = boot({ hasUI: false });
-		await harness.emit("session_start");
-
-		await harness.runCommand("");
-
-		expect(harness.ui.select).not.toHaveBeenCalled();
-		const [message] = harness.ui.notify.mock.calls.at(-1) ?? [];
-		expect(message).toContain("historyRows=5");
-		expect(message).toContain("placement=belowEditor");
-	});
-});
-
-describe("config file", () => {
-	beforeEach(() => {
-		vi.useFakeTimers();
-		vi.setSystemTime(T0);
-	});
-
-	afterEach(() => {
-		vi.useRealTimers();
-	});
-
-	it("loads options from the config file on session_start", async () => {
-		mkdirSync(dirname(configPath()), { recursive: true });
-		writeFileSync(configPath(), JSON.stringify({ historyRows: 9, visible: false }), "utf8");
-
-		const harness = boot();
-		await harness.emit("session_start");
-
-		await harness.runCommand("rows");
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings rows: 9", "info");
-
-		await runPrompt(harness);
-		expect(harness.render(160)).toEqual([]);
-	});
-
-	it("CLI flags override the config file for one run without persisting", async () => {
-		mkdirSync(dirname(configPath()), { recursive: true });
-		writeFileSync(configPath(), JSON.stringify({ historyRows: 9 }), "utf8");
-
-		const harness = boot();
-		harness.flagValues.set("mx-pi-context-stats-rows", "2");
-		await harness.emit("session_start");
-
-		await harness.runCommand("rows");
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings rows: 2", "info");
-		expect(readSavedConfig().historyRows).toBe(9);
-	});
-
-	it("still applies the change when the config cannot be saved", async () => {
-		// A regular file where the extensions directory should be makes save fail.
-		writeFileSync(join(agentDir, "extensions"), "not a directory", "utf8");
-
-		const harness = boot();
-		await harness.emit("session_start");
-		await harness.runCommand("rows 8");
-
-		const saveWarning = harness.ui.notify.mock.calls.find((m) => String(m[0]).includes("could not save config"));
-		expect(saveWarning?.[1]).toBe("warning");
-
-		await harness.runCommand("rows");
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("mx-pi-settings rows: 8", "info");
-	});
-});
-
-describe("widget robustness", () => {
-	beforeEach(() => {
-		vi.useFakeTimers();
-		vi.setSystemTime(T0);
-	});
-
-	afterEach(() => {
-		vi.useRealTimers();
-	});
-
-	it("renders an error line instead of throwing when the theme fails", async () => {
-		const harness = boot();
-		await harness.emit("session_start");
-		await runPrompt(harness);
-
 		const factory = harness.widgetFactory();
 		const broken = {
 			fg: () => {
@@ -519,50 +338,29 @@ describe("widget robustness", () => {
 		};
 		const component = factory?.({ requestRender: vi.fn() }, broken);
 		expect(component?.render(80)).toEqual(["mx-pi-context-stats widget: theme boom"]);
+		for (const width of [0, 1, 20, 80, 200]) expect(() => harness.render(width)).not.toThrow();
 	});
 
-	it("honours the mx-pi-context-stats-hide flag", async () => {
-		const harness = boot();
-		harness.flagValues.set("mx-pi-context-stats-hide", true);
-		await harness.emit("session_start");
-		await runPrompt(harness);
-
-		expect(harness.render(160)).toEqual([]);
-	});
-
-	it("honours the mx-pi-context-stats-rows flag", async () => {
-		const harness = boot();
-		harness.flagValues.set("mx-pi-context-stats-rows", "2");
-		await harness.emit("session_start");
-		for (let i = 0; i < 4; i++) await runPrompt(harness);
-
-		const text = harness.render(160).join("\n");
-		expect(text).toContain("#4");
-		expect(text).not.toContain("#2  ");
-	});
-
-	it("renders at any width without throwing", async () => {
+	it("does not let stale TUI redraw handles break lifecycle handlers", async () => {
 		const harness = boot();
 		await harness.emit("session_start");
-		await runPrompt(harness);
-		await harness.emit("tool_execution_start", {
-			toolName: "spawn_subagent",
-			toolCallId: "call-1",
-			args: { agent_name: "Explore" },
-		});
-
-		for (const width of [0, 1, 20, 80, 200]) {
-			expect(() => harness.render(width)).not.toThrow();
-		}
+		const factory = harness.widgetFactory();
+		factory?.(
+			{
+				requestRender() {
+					throw new Error("stale TUI");
+				},
+			},
+			mockTheme,
+		);
+		await expect(harness.emit("agent_end")).resolves.toBeUndefined();
 	});
 
 	it("uses a plain-text theme without leaking ANSI", async () => {
 		const harness = boot();
 		await harness.emit("session_start");
 		await runPrompt(harness);
-		for (const line of harness.render(160)) {
-			expect(line).not.toContain("\u001b");
-		}
+		for (const line of harness.render(160)) expect(line).not.toContain("\u001b");
 		expect(mockTheme.fg("accent", "x")).toBe("x");
 	});
 });

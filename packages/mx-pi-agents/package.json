@@ -48,9 +48,12 @@
 		"@earendil-works/pi-tui": ">=0.80.0",
 		"typebox": ">=1.1.0"
 	},
+	"dependencies": {
+		"@rennis23/mx-pi-settings": "^0.1.0"
+	},
 	"devDependencies": {
-		"@earendil-works/pi-coding-agent": "^0.99.1",
-		"@earendil-works/pi-tui": "^0.99.1",
+		"@earendil-works/pi-coding-agent": "^1.0.3",
+		"@earendil-works/pi-tui": "^1.0.3",
 		"typebox": "^1.3.27"
 	}
 }

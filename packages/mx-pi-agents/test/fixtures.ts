@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { afterEach } from "vitest";
 import type { SessionContext } from "../src/policy.js";
 import { sha256Hex } from "../src/security.js";
-import type { AgentDefinition, AgentKind, PinnedAgent, SourceKind } from "../src/types.js";
+import type { AgentDefinition, PinnedAgent, SourceKind, SystemPromptMode } from "../src/types.js";
 
 const created: string[] = [];
 
@@ -48,17 +48,23 @@ export interface MakeAgentOptions {
 	sandbox?: AgentDefinition["sandbox"];
 	delegate?: boolean;
 	body?: string;
-	/** Provenance of the definition; not the agent kind. */
+	/** Provenance of the definition; not the prompt mode. */
 	sourceKind?: SourceKind;
-	/** Agent kind (`persona`/`main`/`sub`); defaults to `main`. */
-	agentKind?: AgentKind;
+	/** How the body mutates the main system prompt; defaults to `append`. */
+	systemPrompt?: SystemPromptMode;
+	/** When true the definition may only run as a child. */
+	subAgentOnly?: boolean;
+	/** When true the definition may only run in the main session. */
+	mainAgentOnly?: boolean;
 	/** Extra frontmatter lines appended verbatim (used for hostile cases). */
 	extraFrontmatter?: string;
 }
 
 function frontmatterFor(options: MakeAgentOptions, name: string): string {
 	const lines = [`name: ${name}`, `description: ${options.description ?? `${name} description`}`];
-	if (options.agentKind !== undefined) lines.push(`kind: ${options.agentKind}`);
+	if (options.systemPrompt !== undefined) lines.push(`system_prompt: ${options.systemPrompt}`);
+	if (options.subAgentOnly !== undefined) lines.push(`sub_agent_only: ${options.subAgentOnly}`);
+	if (options.mainAgentOnly !== undefined) lines.push(`main_agent_only: ${options.mainAgentOnly}`);
 	if (options.tools !== undefined) lines.push(`tools: [${options.tools.join(", ")}]`);
 	if (options.toolsInheritance !== undefined) lines.push(`tools_inheritance: ${options.toolsInheritance}`);
 	if (options.scope !== undefined) lines.push(`scope: [${options.scope.join(", ")}]`);
@@ -95,7 +101,9 @@ export function makeAgent(options: MakeAgentOptions = {}): PinnedAgent {
 	const definition: AgentDefinition = {
 		name,
 		description: options.description ?? `${name} description`,
-		kind: options.agentKind ?? "main",
+		systemPrompt: options.systemPrompt ?? "append",
+		subAgentOnly: options.subAgentOnly ?? false,
+		mainAgentOnly: options.mainAgentOnly ?? false,
 		tools: options.tools,
 		toolsInheritance: options.toolsInheritance ?? "none",
 		scope: options.scope,

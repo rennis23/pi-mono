@@ -9,7 +9,7 @@
 
 import { parseFrontmatter } from "./frontmatter.js";
 import { sanitizeUiText } from "./security.js";
-import type { AgentDefinition, AgentDiagnostic, AgentKind, ThinkingLevel, ToolsInheritance } from "./types.js";
+import type { AgentDefinition, AgentDiagnostic, SystemPromptMode, ThinkingLevel, ToolsInheritance } from "./types.js";
 
 /** Name charset: lowercase slug, starts alphanumeric, max 64 chars. */
 const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -26,7 +26,7 @@ const MAX_SKILL_NAME_CHARS = 64;
 /** Scope entries: non-empty, no control characters, bounded length. */
 const PATH_ENTRY_PATTERN = /^[^\u0000-\u001F\u007F]{1,1024}$/;
 const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-const AGENT_KINDS: readonly AgentKind[] = ["persona", "main", "sub"];
+const SYSTEM_PROMPT_MODES: readonly SystemPromptMode[] = ["replace", "append"];
 /** The reset name always wins; a definition may never claim it. */
 export const RESERVED_AGENT_NAME = "none";
 
@@ -190,7 +190,9 @@ function readPathList(data: Record<string, unknown>, key: string, errors: string
 const KNOWN_FIELDS = new Set([
 	"name",
 	"description",
-	"kind",
+	"system_prompt",
+	"sub_agent_only",
+	"main_agent_only",
 	"tools",
 	"tools_inheritance",
 	"scope",
@@ -242,16 +244,28 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 	const skills = readSkillList(data, "skills", errors);
 	const contextFiles = readPathList(data, "context_files", errors);
 
-	// Kind parsing is total and fail-closed: absent means `main`; a value that is
-	// not exactly one of the three strings (or is not a string) fails the whole
-	// definition rather than falling back to a permissive default.
-	let kind: AgentKind = "main";
-	if (data.kind !== undefined && data.kind !== null) {
-		if (typeof data.kind === "string" && (AGENT_KINDS as readonly string[]).includes(data.kind)) {
-			kind = data.kind as AgentKind;
+	// system_prompt parsing is total and fail-closed: absent means `append`; a
+	// value that is not exactly one of the two modes (or is not a string) fails
+	// the whole definition rather than falling back to a permissive default.
+	let systemPrompt: SystemPromptMode = "append";
+	if (data.system_prompt !== undefined && data.system_prompt !== null) {
+		if (
+			typeof data.system_prompt === "string" &&
+			(SYSTEM_PROMPT_MODES as readonly string[]).includes(data.system_prompt)
+		) {
+			systemPrompt = data.system_prompt as SystemPromptMode;
 		} else {
-			errors.push(`kind must be one of: ${AGENT_KINDS.join(", ")}`);
+			errors.push(`system_prompt must be one of: ${SYSTEM_PROMPT_MODES.join(", ")}`);
 		}
+	}
+
+	// Sub-/main-only parsing is total: both default to false, and the two
+	// booleans may never both be true — a definition cannot be exclusively
+	// usable in exactly one session when it claims both sessions.
+	const subAgentOnly = readBool(data, "sub_agent_only", errors);
+	const mainAgentOnly = readBool(data, "main_agent_only", errors);
+	if (subAgentOnly && mainAgentOnly) {
+		errors.push("sub_agent_only and main_agent_only are mutually exclusive");
 	}
 
 	let toolsInheritance: ToolsInheritance = "none";
@@ -306,7 +320,9 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 		definition: {
 			name: rawName!,
 			description: rawDescription!,
-			kind,
+			systemPrompt,
+			subAgentOnly,
+			mainAgentOnly,
 			tools,
 			toolsInheritance,
 			scope,

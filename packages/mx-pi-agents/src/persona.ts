@@ -12,19 +12,19 @@
  */
 
 import type {
-	AgentKind,
 	PinnedAgent,
 	SwitchApplied,
 	SwitchBaseline,
 	SwitchEntryData,
 	SwitchPlan,
+	SystemPromptMode,
 	ThinkingLevel,
 } from "./types.js";
 
 /** What a single-name `#name [task]` directive should do. */
 export type DirectiveDispatch =
 	| { action: "reset" }
-	| { action: "switch"; kind: "persona" | "main" }
+	| { action: "switch"; mode: SystemPromptMode }
 	| { action: "delegate" }
 	| { action: "refuse"; message: string };
 
@@ -32,28 +32,28 @@ export type DirectiveDispatch =
 export const RESET_NAME = "none";
 
 /**
- * Decide what a single-name directive does, from the resolved kind.
+ * Decide what a single-name directive does, from the resolved definition.
  *
- * `kind` is `undefined` when no definition owns the name, so an unknown name
- * refuses here rather than reaching the model or the delegation path.
+ * `definition` is `undefined` when no definition owns the name, so an unknown
+ * name refuses here rather than reaching the model or the delegation path.
  */
 export function dispatchDirective(input: {
 	name: string;
-	kind: AgentKind | undefined;
+	definition: { systemPrompt: SystemPromptMode; subAgentOnly: boolean } | undefined;
 	hasTask: boolean;
 }): DirectiveDispatch {
 	if (input.name === RESET_NAME) {
 		if (input.hasTask) return { action: "refuse", message: `"#${RESET_NAME}" takes no task.` };
 		return { action: "reset" };
 	}
-	if (input.kind === undefined) {
+	if (input.definition === undefined) {
 		return { action: "refuse", message: `unknown agent "#${input.name}".` };
 	}
-	if (input.kind === "sub") {
+	if (input.definition.subAgentOnly) {
 		if (!input.hasTask) return { action: "refuse", message: `subagent "${input.name}" needs a task.` };
 		return { action: "delegate" };
 	}
-	return { action: "switch", kind: input.kind };
+	return { action: "switch", mode: input.definition.systemPrompt };
 }
 
 /** The spawn-capable tool a delegating main-session switch keeps active. */
@@ -80,7 +80,7 @@ export type SwitchOutcome = { ok: true; plan: SwitchPlan } | { ok: false; refusa
  */
 export function planSwitch(agent: PinnedAgent, ctx: SwitchContext): SwitchOutcome {
 	const definition = agent.definition;
-	if (definition.kind !== "persona" && definition.kind !== "main") {
+	if (definition.subAgentOnly) {
 		return { ok: false, refusal: `agent "${definition.name}" is not a main-session agent.` };
 	}
 
@@ -127,8 +127,7 @@ export function planSwitch(agent: PinnedAgent, ctx: SwitchContext): SwitchOutcom
 		ok: true,
 		plan: {
 			name: definition.name,
-			kind: definition.kind,
-			prompt: { mode: definition.kind === "persona" ? "replace" : "append", body: definition.body },
+			mode: definition.systemPrompt,
 			applied,
 		},
 	};
@@ -212,7 +211,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function parseSwitchEntry(data: unknown): SwitchEntryData | undefined {
 	if (!isRecord(data)) return undefined;
 	if (data.name !== null && typeof data.name !== "string") return undefined;
-	if (data.name !== null && data.kind !== "persona" && data.kind !== "main") return undefined;
+	if (data.name !== null && data.mode !== "replace" && data.mode !== "append") return undefined;
 	if (typeof data.switchedAt !== "number" || !Number.isFinite(data.switchedAt)) return undefined;
 
 	const baseline = data.baseline;
@@ -245,7 +244,7 @@ export function parseSwitchEntry(data: unknown): SwitchEntryData | undefined {
 
 	return {
 		name: data.name as string | null,
-		kind: data.kind as AgentKind | undefined,
+		mode: data.mode as SystemPromptMode | undefined,
 		baseline: {
 			tools,
 			model: (model ?? undefined) as string | undefined,
@@ -273,7 +272,7 @@ export type RehydrateDecision =
 	| {
 			active: true;
 			name: string;
-			kind: "persona" | "main";
+			mode: SystemPromptMode;
 			baseline: SwitchBaseline;
 			applied: SwitchApplied;
 			/** True when the live runtime still matches the baseline and must be re-applied. */
@@ -292,7 +291,7 @@ export function rehydrate(
 	entry: SwitchEntryData | undefined,
 	current: { tools: readonly string[]; model: string | undefined; thinking: ThinkingLevel | undefined },
 ): RehydrateDecision {
-	if (!entry || entry.name === null || (entry.kind !== "persona" && entry.kind !== "main")) {
+	if (!entry || entry.name === null || (entry.mode !== "replace" && entry.mode !== "append")) {
 		return { active: false };
 	}
 	const applied = entry.applied ?? {};
@@ -302,7 +301,7 @@ export function rehydrate(
 	return {
 		active: true,
 		name: entry.name,
-		kind: entry.kind,
+		mode: entry.mode,
 		baseline: entry.baseline,
 		applied,
 		applyPreset: !alreadyApplied && pristine,

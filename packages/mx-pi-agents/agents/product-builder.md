@@ -1,7 +1,6 @@
 ---
 name: product-builder
 description: Orchestrate explorer, planner, builder, reviewer, verifier and security-reviewer through a task and report a commit message and PR description
-kind: main
 tools: [read, grep, find, ls]
 delegate: true
 ---

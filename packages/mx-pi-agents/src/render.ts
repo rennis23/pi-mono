@@ -8,7 +8,7 @@
 
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import { sanitizeUiText } from "./security.js";
-import type { AgentDiagnostic, AgentKind, RunResult } from "./types.js";
+import type { AgentDiagnostic, RunResult, SystemPromptMode } from "./types.js";
 
 /** Minimal theme surface used by the renderer (keeps this module pi-free). */
 export interface RenderTheme {
@@ -114,7 +114,8 @@ export function renderDirectiveMessage(
 /** Render the roster shown by `/mx-pi-agents list`. */
 export interface RosterLine {
 	name: string;
-	kind: AgentKind;
+	/** Prompt mode for a main-session switch; `sub` marks a sub-agent-only definition. */
+	kind: SystemPromptMode | "sub";
 	source: string;
 	trusted: boolean;
 	hash: string;
@@ -137,10 +138,10 @@ export function renderRosterLines(entries: readonly RosterLine[], theme: RenderT
 	return lines;
 }
 
-/** One-line notice for a main-session switch (`persona`/`main`) or reset. */
-export function formatSwitchNotice(name: string, kind: AgentKind | "base"): string {
-	if (kind === "base") return "reset to plain pi";
-	return `switched to ${kind} ${sanitizeUiText(name, 64)}`;
+/** One-line notice for a main-session switch (`replace`/`append`) or reset. */
+export function formatSwitchNotice(name: string, mode: SystemPromptMode | "base"): string {
+	if (mode === "base") return "reset to plain pi";
+	return `switched to ${mode} ${sanitizeUiText(name, 64)}`;
 }
 
 /** Text summary of diagnostics, capped and sanitized. */

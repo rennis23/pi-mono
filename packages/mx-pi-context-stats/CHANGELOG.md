@@ -27,23 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   payloads. Tracking is opt-in by tool name (`subagentToolNames`, default
   `["spawn_subagent"]`) and the section simply never renders when no such tool
   exists.
-- `/mx-pi-settings` command: an interactive picker in TUI sessions and scriptable
-  subcommands (`toggle`, `summary`, `rows <n>`, `subagent-rows <n>`,
-  `subagents on|off`, `health on|off`, `placement above|below`, `reset`) in every
-  mode, with a text report instead of a dialog when no UI is available.
-- Durable options at `<agentDir>/extensions/mx-pi-context-stats.json` (honors
-  `PI_CODING_AGENT_DIR`). Out-of-range numbers are clamped and invalid values
-  ignored, so a malformed file cannot break the widget.
-- `--mx-pi-context-stats-rows` and `--mx-pi-context-stats-hide` CLI flags that
-  override the config file for a single run without persisting.
 - Pure, injectable core (`src/*.ts`, no pi types beyond a minimal theme surface):
-  time and the config path are injected, `format.ts` never emits `NaN`/`Infinity`,
-  and `health.ts` returns `undefined` rather than `0` for unmeasurable metrics so
-  callers omit the cell instead of rendering a misleading number.
+  time is injected, `format.ts` never emits `NaN`/`Infinity`, and `health.ts`
+  returns `undefined` rather than `0` for unmeasurable metrics so callers omit
+  the cell instead of rendering a misleading number.
 
 ### Changed
 
-- Verified against pi 0.99.1 and bumped the dev dependencies
-  (`@earendil-works/pi-coding-agent` / `@earendil-works/pi-tui` to `^0.99.1`).
-  The peer range stays `>=0.80.0`. No source change was needed for 0.99: the
-  extension uses no API removed between 0.82 and 0.99.
+- Registered widget options with `@rennis23/mx-pi-settings` and moved persistence to its central namespaced store.
+- Replaced `/mx-pi-settings` options commands with the hub; `/mx-pi-context-stats` now prints the session summary.
+- Removed the development-only config file, context-stats CLI flags, and settings picker; no backward-compatibility migration is provided.
