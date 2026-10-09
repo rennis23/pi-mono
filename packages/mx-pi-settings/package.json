@@ -1,6 +1,6 @@
 {
 	"name": "@rennis23/mx-pi-settings",
-	"version": "0.2.0",
+	"version": "0.1.0",
 	"description": "Pi extension. Central settings hub every mx-pi extension can register its own options with, edited from one TUI screen and one config file.",
 	"keywords": [
 		"pi-package",
