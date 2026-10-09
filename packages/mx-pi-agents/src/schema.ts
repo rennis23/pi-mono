@@ -10,12 +10,12 @@
 
 import { parseFrontmatter } from "./frontmatter.js";
 import { sanitizeUiText } from "./security.js";
-import type { AgentDefinition, SystemPromptMode, ThinkingLevel } from "./types.js";
+import { parseToolEntry } from "./tools.js";
+import type { AgentDefinition, SystemPromptMode, ThinkingLevel, ToolEntry } from "./types.js";
 
 /** Name charset: lowercase slug, starts alphanumeric, max 64 chars. */
 const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-/** Tool names come from pi (`read`, `mcp__srv__tool`, …). */
-const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
+/** Tool entries are validated by `parseToolEntry` (`read`, `+codemode`, `mcp__srv__tool`). */
 /** Model labels are `provider/model-id` or a bare model id. */
 const MODEL_PATTERN = /^[A-Za-z0-9._/:-]{1,200}$/;
 /**
@@ -54,22 +54,26 @@ function readString(data: Record<string, unknown>, key: string, errors: string[]
 	return value.trim();
 }
 
-/** Read a string-list field of tool names, deduping while preserving order. */
-function readToolList(data: Record<string, unknown>, key: string, errors: string[]): string[] | undefined {
+/** Read a string-list field of tool entries (`name`, `+name`, `-name`), deduping while preserving order. */
+function readToolEntries(data: Record<string, unknown>, key: string, errors: string[]): ToolEntry[] | undefined {
 	const value = data[key];
 	if (value === undefined) return undefined;
 	if (!Array.isArray(value)) {
-		errors.push(`${key} must be a list of tool names`);
+		errors.push(`${key} must be a list of tool entries`);
 		return undefined;
 	}
-	const out: string[] = [];
+	const out: ToolEntry[] = [];
 	for (const item of value) {
-		if (typeof item !== "string" || !TOOL_NAME_PATTERN.test(item.trim())) {
-			errors.push(`${key} contains an invalid tool name`);
+		if (typeof item !== "string") {
+			errors.push(`${key} contains an invalid tool entry`);
 			return undefined;
 		}
-		const name = item.trim();
-		if (!out.includes(name)) out.push(name);
+		const entry = parseToolEntry(item);
+		if (entry === undefined) {
+			errors.push(`${key} contains an invalid tool entry`);
+			return undefined;
+		}
+		if (!out.some((other) => other.op === entry.op && other.name === entry.name)) out.push(entry);
 	}
 	return out;
 }
@@ -164,7 +168,7 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 		errors.push(`description must be at most ${MAX_DESCRIPTION_CHARS} characters`);
 	}
 
-	const tools = readToolList(data, "tools", errors);
+	const tools = readToolEntries(data, "tools", errors);
 	const skills = readSkillList(data, "skills", errors);
 	const contextFiles = readPathList(data, "context_files", errors);
 

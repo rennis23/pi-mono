@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { definitionFromRaw, MAX_DESCRIPTION_CHARS, parseAgentDefinition } from "./schema.js";
-import type { AgentDefinition } from "./types.js";
+import type { AgentDefinition, ToolEntry } from "./types.js";
 
 const BODY = "You are a test agent.";
 
 function md(frontmatter: string, body = BODY): string {
 	return `---\n${frontmatter}\n---\n\n${body}\n`;
+}
+
+function tool(op: ToolEntry["op"], name: string): ToolEntry {
+	return { op, name };
 }
 
 function expectOk(result: ReturnType<typeof parseAgentDefinition>): AgentDefinition {
@@ -41,7 +45,12 @@ describe("parseAgentDefinition", () => {
 		expect(definition.name).toBe("reviewer");
 		expect(definition.description).toBe("Read-only code review");
 		expect(definition.systemPrompt).toBe("replace");
-		expect(definition.tools).toEqual(["read", "grep", "find", "ls"]);
+		expect(definition.tools).toEqual([
+			tool("plain", "read"),
+			tool("plain", "grep"),
+			tool("plain", "find"),
+			tool("plain", "ls"),
+		]);
 		expect(definition.skills).toEqual(["alpha", "beta-1"]);
 		expect(definition.contextFiles).toEqual(["AGENTS.md", "docs/notes.md"]);
 		expect(definition.model).toBe("anthropic/claude-sonnet-4-5");
@@ -102,11 +111,26 @@ describe("parseAgentDefinition", () => {
 		expect(listed.contextFiles).toEqual(["AGENTS.md", "docs/notes.md"]);
 	});
 
-	it("dedupes tool names and keeps unknown-but-valid tool names", () => {
+	it("dedupes tool entries and keeps unknown-but-valid tool names", () => {
 		const definition = expectOk(
 			parseAgentDefinition(md("name: a\ndescription: d\ntools: [read, read, mcp__srv__tool]")),
 		);
-		expect(definition.tools).toEqual(["read", "mcp__srv__tool"]);
+		expect(definition.tools).toEqual([tool("plain", "read"), tool("plain", "mcp__srv__tool")]);
+	});
+
+	it("parses +name and -name entries, keeping the order they were declared in", () => {
+		const definition = expectOk(parseAgentDefinition(md("name: a\ndescription: d\ntools: [+codemode, -write]")));
+		expect(definition.tools).toEqual([tool("add", "codemode"), tool("remove", "write")]);
+
+		// A plain name and a modifier for the same tool are different entries.
+		const mixed = expectOk(parseAgentDefinition(md("name: a\ndescription: d\ntools: [read, -read, +read]")));
+		expect(mixed.tools).toEqual([tool("plain", "read"), tool("remove", "read"), tool("add", "read")]);
+	});
+
+	it("rejects a bare modifier and an invalid tool entry", () => {
+		expectErr(parseAgentDefinition(md("name: a\ndescription: d\ntools: [+]")), "invalid tool entry");
+		expectErr(parseAgentDefinition(md("name: a\ndescription: d\ntools: [-]")), "invalid tool entry");
+		expectErr(parseAgentDefinition(md("name: a\ndescription: d\ntools: [+read tool]")), "invalid tool entry");
 	});
 
 	it("drops a definition whose skills or context_files are malformed", () => {
@@ -163,7 +187,7 @@ describe("parseAgentDefinition", () => {
 
 	it("rejects wrong types", () => {
 		expectErr(parseAgentDefinition(md("name: a\ndescription: d\ntools: read")), "tools must be a list");
-		expectErr(parseAgentDefinition(md("name: a\ndescription: d\ntools: [read, 1]")), "invalid tool name");
+		expectErr(parseAgentDefinition(md("name: a\ndescription: d\ntools: [read, 1]")), "invalid tool entry");
 		expectErr(parseAgentDefinition(md("name: a\ndescription: d\nthinking: extreme")), "thinking must be one of");
 		expectErr(parseAgentDefinition(md("name: 3\ndescription: d")), "name must be a string");
 		expectErr(parseAgentDefinition(md("name: a\ndescription: 3")), "description must be a string");

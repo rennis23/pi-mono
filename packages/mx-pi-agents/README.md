@@ -4,9 +4,11 @@ Switch the main [pi.dev](https://pi.dev) session between named agent definitions
 
 Each definition is a markdown file with frontmatter plus a prompt body. A switch
 can replace or append to the system prompt and preset the session's tools,
-model, thinking level, skills and project context files. Definitions are pinned
-at session start and re-hashed every turn, project definitions are gated behind
-approval, and a preset that does not fully resolve refuses the whole switch.
+model, thinking level, skills and project context files. `tools` is either an
+exact preset or, with `+name`/`-name` entries, a delta on top of the selection the
+session already has. Definitions are pinned at session start and re-hashed every
+turn, project definitions are gated behind approval, and a preset that does not
+fully resolve refuses the whole switch.
 
 > **Scope.** This package is the trimmed, persona-only extraction of
 > `mx-pi-agents`. It does **not** run subagents: there is no `mx_pi_agent` tool,
@@ -60,7 +62,8 @@ While a switch is active:
 - the footer shows `replace:<name>` or `append:<name>` (`ctx.ui.setStatus` key
   `mx-pi-agents`);
 - `tools`, `model` and `thinking` are applied as a preset and restored by
-  `#none`;
+  `#none`; a `tools` delta applies on top of the selection active when the switch
+  runs, and `#none` still restores the pristine session baseline;
 - `skills` and `context_files` narrow what the resource loader puts into the
   prompt: absent means every loaded entry, `[]` means none, a list is an
   allow-list (unknown entries match nothing);
@@ -96,6 +99,38 @@ You are a meticulous code reviewer. Report findings by severity and cite
 file:line evidence.
 ```
 
+### Tool deltas
+
+Plain tool names replace the selection. `+name` adds one tool and `-name` removes
+one, applied in list order, so a definition can extend the session it is switched
+into instead of dictating it:
+
+```markdown
+---
+name: reviewer
+description: Review a diff for correctness and security
+system_prompt: replace
+tools: [+codemode, -write]
+---
+
+You are a meticulous code reviewer. Report findings by severity and cite
+file:line evidence.
+```
+
+The rule matches pi's `defaultTools` entries:
+
+- a list of only `+name`/`-name` applies on top of the selection active when the
+  switch runs, so `read`, `bash`, `edit` and `write` survive;
+- a list with a plain name forms the selection first, then modifiers apply in
+  order, so `[-bash, read]` resolves to `read` and the `-bash` matches nothing;
+- adding a tool the session already has, or removing one it does not have, is a
+  no-op;
+- `#none` still restores the pristine session baseline, and `/mx-pi-agents status`
+  shows the declared entries next to the resolved selection.
+
+A declared name that does not resolve in the main session still refuses the whole
+switch, so a typo in a delta never silently does nothing.
+
 ### Frontmatter reference
 
 | Field | Required | Values | Notes |
@@ -103,7 +138,7 @@ file:line evidence.
 | `name` | yes | `[a-z0-9][a-z0-9_-]{0,63}` | Identity. `none` is reserved. The definition file MUST be named `<name>.md` |
 | `description` | yes | ≤ 512 chars | Shown in the roster and autocomplete |
 | `system_prompt` | no | `replace`, `append` | Absent means `append`. Anything else drops the definition |
-| `tools` | no | list of tool names | Absent leaves the active tools untouched; `[]` means no tools; a list is an exact preset |
+| `tools` | no | tool names, `+name`, `-name` | Absent leaves the active tools untouched; `[]` means no tools; plain names are an exact preset; a list of only `+name`/`-name` changes the inherited selection instead of replacing it |
 | `skills` | no | list of skill names | Allow-list while active. Absent = all loaded skills; `[]` = none |
 | `context_files` | no | list of paths | Allow-list by absolute path, cwd-relative path or basename |
 | `model` | no | `provider/model-id` or model id | Must resolve with configured credentials |
@@ -130,7 +165,7 @@ exists.
 ```bash
 /mx-pi-agents list      # roster with mode, source, trust and pinned hash
 /mx-pi-agents approve   # open a dialog per gated definition and pin its hash
-/mx-pi-agents status    # config path, roster counts, gated count, active and default persona
+/mx-pi-agents status    # config path, roster counts, gated count, active and default persona, declared tool entries
 /mx-pi-agents refresh   # re-pin the registry from disk
 ```
 

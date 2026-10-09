@@ -368,6 +368,17 @@ describe("registry: boundary hardening", () => {
 		expect(entry2.tools).toBeUndefined();
 		expect(entry2.model).toBe("m");
 	});
+
+	it("rosterEntries show modifier entries exactly as declared", () => {
+		const dir = join(agentDir, "agents");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "delta.md"),
+			"---\nname: delta\ndescription: d\ntools: [+codemode, -write]\n---\n\nBody.\n",
+		);
+		const agent = findAgent(discoverAgents(dirs(), () => 1).agents, "delta")!;
+		expect(rosterEntries([agent])[0].tools).toBe("+codemode,-write");
+	});
 });
 
 describe("registry: survivor kills", () => {

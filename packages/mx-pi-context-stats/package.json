@@ -1,6 +1,6 @@
 {
 	"name": "@rennis23/mx-pi-context-stats",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Pi extension. Per-prompt context, token, cost and subagent stats in a below-editor widget and a footer status line.",
 	"keywords": [
 		"pi-package",
