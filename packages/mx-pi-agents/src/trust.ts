@@ -12,6 +12,7 @@
 
 import { type AgentsConfig, APPROVAL_MAX_AGE_MS, type ApprovalEntry, type ApprovalLedger } from "./config.js";
 import { sanitizeUiText } from "./security.js";
+import { formatToolEntry } from "./tools.js";
 import type { PinnedAgent } from "./types.js";
 
 /** Outcome of the approval gate for one agent. */
@@ -75,7 +76,9 @@ export function approvalRequest(agent: PinnedAgent): ApprovalRequest {
 	const fileName = fileNameOf(agent.source.path);
 	const name = sanitizeUiText(agent.definition.name, 64);
 	const description = sanitizeUiText(agent.definition.description, 120);
-	const tools = agent.definition.tools ? sanitizeUiText(agent.definition.tools.join(", "), 200) : "(inherit rules)";
+	const tools = agent.definition.tools
+		? sanitizeUiText(agent.definition.tools.map(formatToolEntry).join(", "), 200)
+		: "(inherit rules)";
 	const lines = [
 		`Agent: ${name}`,
 		`System prompt: ${agent.definition.systemPrompt}`,

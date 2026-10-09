@@ -13,12 +13,17 @@ import {
 	runtimeMatches,
 	snapshotBaseline,
 } from "./persona.js";
-import type { SwitchBaseline, SwitchEntryData, ThinkingLevel } from "./types.js";
+import type { SwitchBaseline, SwitchEntryData, ThinkingLevel, ToolEntry } from "./types.js";
 
 const context: SwitchContext = {
 	availableTools: ["read", "grep", "bash", "edit", "write"],
+	inheritedTools: ["read", "grep", "bash", "edit", "write"],
 	isModelAvailable: (model) => model === "anthropic/claude-sonnet-4-5",
 };
+
+function toolEntry(op: "plain" | "add" | "remove", name: string): ToolEntry {
+	return { op, name };
+}
 
 describe("dispatchDirective", () => {
 	it("treats none as reset and refuses a task", () => {
@@ -94,9 +99,51 @@ describe("planSwitch", () => {
 		if (!outcome.ok) return;
 		expect(outcome.plan.applied).toEqual({
 			tools: ["read", "grep"],
+			declared: [toolEntry("plain", "read"), toolEntry("plain", "grep")],
 			model: "anthropic/claude-sonnet-4-5",
 			thinking: "high",
 		});
+	});
+
+	it("applies a modifier-only list on top of the inherited selection", () => {
+		const outcome = planSwitch(makeAgent({ name: "p", tools: ["+codemode", "-write"] }), {
+			...context,
+			availableTools: [...context.availableTools, "codemode"],
+			inheritedTools: ["read", "bash", "edit", "write"],
+		});
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(outcome.plan.applied.tools).toEqual(["read", "bash", "edit", "codemode"]);
+		expect(outcome.plan.applied.declared).toEqual([toolEntry("add", "codemode"), toolEntry("remove", "write")]);
+	});
+
+	it("lets plain names form the base and applies modifiers after them, in order", () => {
+		const outcome = planSwitch(makeAgent({ name: "p", tools: ["-bash", "read"] }), {
+			...context,
+			inheritedTools: ["read", "bash", "write"],
+		});
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		// Plain names form the selection first, so `-bash` matches nothing here.
+		expect(outcome.plan.applied.tools).toEqual(["read"]);
+	});
+
+	it("treats a removal that matches nothing in the inherited selection as a no-op", () => {
+		const outcome = planSwitch(makeAgent({ name: "p", tools: ["-grep"] }), {
+			...context,
+			inheritedTools: ["read"],
+		});
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(outcome.plan.applied.tools).toEqual(["read"]);
+	});
+
+	it("still refuses a declared tool that does not resolve in the main session", () => {
+		const outcome = planSwitch(makeAgent({ name: "p", tools: ["+ghost"] }), context);
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.refusal).toContain("do not resolve in the main session");
+		expect(outcome.refusal).toContain("+ghost");
 	});
 });
 
@@ -185,6 +232,15 @@ describe("parseSwitchEntry / lastSwitchEntry", () => {
 		expect(parseSwitchEntry({ name: 3 })).toBeUndefined();
 		expect(parseSwitchEntry({ name: "p", mode: "persona", switchedAt: 1, baseline: { tools: [] } })).toBeUndefined();
 		expect(parseSwitchEntry({ name: "p", mode: "main", switchedAt: 1 })).toBeUndefined();
+	});
+
+	it("round-trips declared tool entries and rejects malformed ones", () => {
+		const withDeclared = entry({ declared: ["+codemode", "-write"] });
+		expect(parseSwitchEntry(withDeclared)).toEqual(withDeclared);
+		expect(parseSwitchEntry({ ...entry(), declared: ["read tool"] })).toBeUndefined();
+		expect(parseSwitchEntry({ ...entry(), declared: ["+"] })).toBeUndefined();
+		expect(parseSwitchEntry({ ...entry(), declared: "read" })).toBeUndefined();
+		expect(parseSwitchEntry({ ...entry(), declared: [1] })).toBeUndefined();
 	});
 
 	it("takes the last switch entry on the branch", () => {

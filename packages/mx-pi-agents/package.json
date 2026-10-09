@@ -1,7 +1,7 @@
 {
 	"name": "@rennis23/mx-pi-agents",
-	"version": "0.1.0",
-	"description": "Pi extension. Switch the main session between named agent definitions that set the system prompt and preset tools, model, thinking, skills and context files.",
+	"version": "0.2.0",
+	"description": "Pi extension. Switch the main session between named agent definitions that set the system prompt and preset or adjust (with +name/-name) tools, model, thinking, skills and context files.",
 	"keywords": [
 		"pi-package",
 		"pi-extension",

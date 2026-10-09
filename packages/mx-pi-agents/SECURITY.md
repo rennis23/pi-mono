@@ -79,7 +79,11 @@ deliberately drops them.
 - A switch applies only the fields the definition declares.
 - An explicit `tools` list with any name that does not resolve in the main
   session refuses the whole switch; an unavailable `model` refuses the whole
-  switch. Nothing is applied on refusal.
+  switch. Nothing is applied on refusal. This covers `+name`/`-name` entries too:
+  a delta that names an unregistered tool is refused rather than applied
+  partially.
+- A `-name` entry whose name does resolve but is not in the inherited selection is
+  a no-op, as in pi. Only an unresolvable name refuses.
 - `[]` means "no tools" and is honored literally.
 - `#none` restores the pre-switch baseline (tools, model, thinking). A baseline
   value that no longer resolves is skipped with a warning; the rest is restored
