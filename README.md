@@ -12,6 +12,7 @@ pi-mono/
 │   └── mx-pi-settings/      # Central settings hub + SDK for mx-pi extensions
 ├── scripts/           # Release, security, and mutation helpers
 ├── test/              # Shared test setup
+├── .circleci/         # CircleCI mutation-testing pipeline
 ├── .github/           # Pull-request CI and CodeQL configuration
 ├── package.json       # Workspace root
 ├── SECURITY.md        # Repository security policy
@@ -54,9 +55,13 @@ npm run release:major
 - `npm run security:packages` validates every public package and its actual npm tarball contents.
 - `npm run security:audit` blocks high and critical production dependency advisories.
 - `npm run security:codeql` runs local CodeQL `security-extended` analysis and fails on SARIF findings.
-- `npm run mutation:changed` runs Stryker only for changed package source; pass a base ref in CI when needed.
+- `npm run mutation:changed` runs Stryker only for changed package source; the CircleCI
+  job passes the merge-base with the base branch, so a branch build mutates all of its
+  changes instead of only the last commit.
 - All quality and security package analysis covers `packages/` and explicitly excludes `sandbox/`.
-- The pull-request workflow defines separate quality, package-security, mutation, CodeQL, and dependency-review jobs. Configure them as required checks in GitHub branch protection.
+- CI defines separate required quality, package-security, CodeQL, and dependency-review
+  jobs on GitHub Actions, plus the `mutation-changed` job on CircleCI. Configure those
+  check names as required checks in GitHub branch protection.
 
 ## Husky hooks
 

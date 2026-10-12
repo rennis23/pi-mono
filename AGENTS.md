@@ -43,6 +43,7 @@ pi-mono/
 │   └── mx-pi-context-stats/ # Context/token/cost stats widget
 ├── scripts/           # release, security, and mutation helpers
 ├── test/              # Shared test setup (setup.ts)
+├── .circleci/         # CircleCI mutation-testing pipeline
 ├── .github/           # Pull-request CI and CodeQL configuration
 ├── biome.json         # Shared formatter/linter config
 ├── tsconfig.base.json # Shared TypeScript config
@@ -109,7 +110,10 @@ export default function myExtension(pi: ExtensionAPI) {
 - `npm run security:codeql` uses the local CodeQL CLI with `security-extended` queries and fails on SARIF findings. The local pre-push hook skips this one check only when the CLI is unavailable; CI remains authoritative.
 - The CodeQL command honours `CODEQL_BIN` when the CLI is not on `PATH`. `github/codeql-action/init` does not put its bundled CLI on `PATH`, so the CI job passes that step's `codeql-path` output into the script as `CODEQL_BIN`.
 - The CI CodeQL job does not upload SARIF. This repository runs GitHub's default CodeQL setup, and GitHub rejects CodeQL analyses from advanced configurations while default setup is enabled. The job still fails on findings because the shared SARIF gate runs before publication.
-- `npm run mutation:changed` compares package source against `HEAD` locally or an explicit PR base SHA in CI. It skips tests, reports, generated files, and `sandbox/`.
+- `npm run mutation:changed` compares package source against `HEAD` locally. In CI the
+  CircleCI job passes the merge-base with the base branch, so a branch build mutates all
+  of its changes instead of only the last commit. It skips tests, reports, generated
+  files, and `sandbox/`.
 - Full mutation testing is available with `npm run mutation`, but changed-source mutation is the mandatory PR/local gate.
 
 ### Versioning
@@ -121,4 +125,6 @@ All packages share the same version. Use the `release:*` scripts — never bump 
 - **pre-commit:** runs `npm run check` (Biome format + lint + tsc)
 - **pre-push:** runs tests, package policy, dependency audit, changed-source mutation, and local CodeQL when installed.
 
-PR CI defines separate required quality, package-security, mutation, CodeQL, and dependency-review jobs. Configure those job names as required checks in GitHub branch protection.
+CI defines separate required quality, package-security, CodeQL, and dependency-review jobs
+on GitHub Actions, plus the `mutation-changed` job on CircleCI. Configure those check names
+as required checks in GitHub branch protection.

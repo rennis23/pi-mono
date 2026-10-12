@@ -1,0 +1,63 @@
+version: 2.1
+
+# Mutation testing runs here; the remaining quality and security jobs stay in
+# GitHub Actions (.github/workflows/quality.yml).
+#
+# Branch builds always mutate the whole set of changes on the branch, i.e. the
+# diff against the merge-base with the base branch, not just the last commit.
+# Add `mutation-changed` to GitHub branch protection as a required check.
+
+jobs:
+  mutation-changed:
+    docker:
+      - image: cimg/node:22
+    resource_class: medium
+    steps:
+      # Full clone: git merge-base needs the base branch commit graph.
+      - checkout
+      - restore_cache:
+          keys:
+            - pi-mono-npm-{{ .Checksum }}
+            - pi-mono-npm-
+      - restore_cache:
+          keys:
+            - pi-mono-stryker-incremental-<< pipeline.git.branch >>
+      - run:
+          name: Install dependencies
+          command: npm ci
+      - save_cache:
+          key: pi-mono-npm-{{ .Checksum }}
+          paths:
+            - node_modules
+            - ~/.npm
+      - run:
+          name: Mutate all changes on the branch
+          no_output_timeout: 30m
+          command: |
+            base_ref="<< pipeline.event.github.pull_request.base.ref >>"
+            if [ -z "$base_ref" ]; then
+              base_ref="master"
+            fi
+            git fetch --no-tags origin "$base_ref"
+            base="$(git merge-base "origin/$base_ref" HEAD)" || base="$base_ref"
+            echo "Mutating branch changes against $base"
+            node scripts/mutation-changed.mjs "$base"
+      - run:
+          name: Publish mutation reports
+          when: always
+          command: |
+            mkdir -p /tmp/artifacts
+            if [ -d reports/mutation ]; then
+              cp -r reports/mutation /tmp/artifacts/
+            fi
+      - store_artifacts:
+          path: /tmp/artifacts
+      - save_cache:
+          key: pi-mono-stryker-incremental-<< pipeline.git.branch >>
+          paths:
+            - reports/mutation/stryker-incremental.json
+
+workflows:
+  quality:
+    jobs:
+      - mutation-changed
