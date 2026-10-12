@@ -13,20 +13,25 @@ jobs:
       - image: cimg/node:22
     resource_class: medium
     steps:
-      # Full clone: git merge-base needs the base branch commit graph.
+      # Full clone: git merge-base needs the commit graph.
       - checkout
+      # Cache keys use only the documented templates. There is no
+      # {{ .Checksum }}; the checksum template is {{ checksum "file" }}.
       - restore_cache:
           keys:
-            - pi-mono-npm-{{ .Checksum }}
-            - pi-mono-npm-
+            - pi-mono-npm-v1-{{ checksum "package-lock.json" }}
+            - pi-mono-npm-v1-
+      # Caches are immutable per key, so the incremental key changes every
+      # run and the prefix key is the fallback that finds the latest one.
       - restore_cache:
           keys:
-            - pi-mono-stryker-incremental-<< pipeline.git.branch >>
+            - pi-mono-stryker-v1-<< pipeline.git.branch >>-{{ .Revision }}
+            - pi-mono-stryker-v1-<< pipeline.git.branch >>-
       - run:
           name: Install dependencies
           command: npm ci
       - save_cache:
-          key: pi-mono-npm-{{ .Checksum }}
+          key: pi-mono-npm-v1-{{ checksum "package-lock.json" }}
           paths:
             - node_modules
             - ~/.npm
@@ -39,7 +44,14 @@ jobs:
               base_ref="master"
             fi
             git fetch --no-tags origin "$base_ref"
-            base="$(git merge-base "origin/$base_ref" HEAD)" || base="$base_ref"
+            base="$(git merge-base FETCH_HEAD HEAD)" \
+              || base="$(git merge-base "origin/$base_ref" HEAD)" \
+              || base="$base_ref"
+            # A push to the base branch has itself as its merge-base, so
+            # there is nothing to mutate. Use the pushed commit's parent.
+            if [ "$base" = "$CIRCLE_SHA1" ]; then
+              base="$(git rev-parse 'HEAD^' 2>/dev/null)" || base="$base"
+            fi
             echo "Mutating branch changes against $base"
             node scripts/mutation-changed.mjs "$base"
       - run:
@@ -53,7 +65,7 @@ jobs:
       - store_artifacts:
           path: /tmp/artifacts
       - save_cache:
-          key: pi-mono-stryker-incremental-<< pipeline.git.branch >>
+          key: pi-mono-stryker-v1-<< pipeline.git.branch >>-{{ .Revision }}
           paths:
             - reports/mutation/stryker-incremental.json
 
