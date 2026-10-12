@@ -12,6 +12,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseAgentDefinition } from "./schema.js";
 import { sanitizeUiText, sha256Hex } from "./security.js";
+import { formatToolEntry } from "./tools.js";
 import type {
 	AgentDiagnostic,
 	AgentSource,
@@ -301,7 +302,9 @@ export function rosterEntries(agents: readonly PinnedAgent[]): RosterEntry[] {
 		path: sanitizeUiText(agent.source.path, 200),
 		trusted: agent.source.trusted,
 		hash: agent.hash.slice(0, 12),
-		tools: agent.definition.tools ? sanitizeUiText(agent.definition.tools.join(","), 200) : undefined,
+		tools: agent.definition.tools
+			? sanitizeUiText(agent.definition.tools.map(formatToolEntry).join(","), 200)
+			: undefined,
 		model: agent.definition.model ? sanitizeUiText(agent.definition.model, 80) : undefined,
 	}));
 }

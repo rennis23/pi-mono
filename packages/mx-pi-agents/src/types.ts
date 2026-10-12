@@ -24,6 +24,20 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 export type SystemPromptMode = "replace" | "append";
 
 /**
+ * One parsed `tools` frontmatter entry.
+ *
+ * `plain` is an exact-preset name, `add` (`+name`) adds a tool to the inherited
+ * selection and `remove` (`-name`) takes one out of it. The rule itself lives in
+ * `src/tools.ts`.
+ */
+export type ToolEntryOp = "plain" | "add" | "remove";
+
+export interface ToolEntry {
+	op: ToolEntryOp;
+	name: string;
+}
+
+/**
  * Where a definition came from. `bundled` and `global` are trusted; `config`
  * (extra `agentPaths`) and `project` (`.pi/agents`) are gated behind approval.
  */
@@ -38,9 +52,10 @@ export interface AgentDefinition {
 	/**
 	 * Main-session tool preset. `undefined` means the field was absent (leave the
 	 * active tools untouched); `[]` means the field was present and empty (no
-	 * tools); a list is an exact preset.
+	 * tools); plain entries are an exact preset and `+name`/`-name` entries change
+	 * the inherited selection instead of replacing it.
 	 */
-	tools: string[] | undefined;
+	tools: ToolEntry[] | undefined;
 	/**
 	 * Main-session skill allow-list. `undefined` means the field was absent (all
 	 * loaded skills survive the switch); `[]` means the field was present and
@@ -106,7 +121,10 @@ export interface SwitchBaseline {
 
 /** The subset of baseline fields a switch declares and therefore changes. */
 export interface SwitchApplied {
+	/** Resolved selection the wiring layer applies. */
 	tools?: string[];
+	/** Entries exactly as the definition declared them, kept for display. */
+	declared?: ToolEntry[];
 	model?: string;
 	thinking?: ThinkingLevel;
 }
@@ -129,6 +147,8 @@ export interface SwitchEntryData {
 	name: string | null;
 	mode?: SystemPromptMode;
 	baseline: SwitchBaseline;
+	/** Canonical text of the entries the definition declared, e.g. `["+codemode", "-write"]`. */
+	declared?: string[];
 	applied?: SwitchApplied;
 	switchedAt: number;
 }

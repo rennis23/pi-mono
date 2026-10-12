@@ -444,6 +444,46 @@ describe("preset application", () => {
 		expect(harness.activeTools()).toEqual(["read"]);
 	});
 
+	it("applies a tool delta on top of the live selection and restores the baseline on #none", async () => {
+		harness = createHarness({
+			cwd,
+			activeTools: ["read", "bash", "edit", "write"],
+			allTools: ["read", "bash", "edit", "write", "codemode"],
+		});
+		mxPiAgents(harness.pi);
+		writeAgent(join(agentDir, "agents"), "delta", "system_prompt: replace\ntools: [+codemode, -write]\n");
+		await start();
+		await emitInput({ text: "#delta" });
+		expect(harness.activeTools()).toEqual(["read", "bash", "edit", "codemode"]);
+
+		harness.notifications.length = 0;
+		await emitInput({ text: "#none" });
+		expect(harness.activeTools()).toEqual(["read", "bash", "edit", "write"]);
+	});
+
+	it("refuses a delta that names a tool the session does not have registered", async () => {
+		harness = createHarness({ cwd, activeTools: ["read", "bash"], allTools: ["read", "bash"] });
+		mxPiAgents(harness.pi);
+		writeAgent(join(agentDir, "agents"), "delta", "system_prompt: replace\ntools: [+ghost]\n");
+		await start();
+		await emitInput({ text: "#delta" });
+		expect(harness.notificationText()).toContain("do not resolve");
+		expect(harness.activeTools()).toEqual(["read", "bash"]);
+	});
+
+	it("status shows the declared entries and the resolved selection", async () => {
+		harness = createHarness({ cwd, activeTools: ["read", "bash"], allTools: ["read", "bash", "codemode"] });
+		mxPiAgents(harness.pi);
+		writeAgent(join(agentDir, "agents"), "delta", "system_prompt: replace\ntools: [+codemode, -bash]\n");
+		await start();
+		await emitInput({ text: "#delta" });
+		const persisted = lastSwitchEntry()?.data as { declared?: string[] } | undefined;
+		expect(persisted?.declared).toEqual(["+codemode", "-bash"]);
+		harness.notifications.length = 0;
+		await harness.runCommand("status");
+		expect(harness.notificationText()).toContain("tools: +codemode, -bash → read, codemode");
+	});
+
 	it("does nothing when the default persona is empty", async () => {
 		await start();
 		expect(harness.notificationText()).not.toContain("switched");

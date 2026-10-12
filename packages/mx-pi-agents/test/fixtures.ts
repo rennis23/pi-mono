@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach } from "vitest";
 import { sha256Hex } from "../src/security.js";
+import { parseToolEntry } from "../src/tools.js";
 import type { AgentDefinition, PinnedAgent, SourceKind, SystemPromptMode } from "../src/types.js";
 
 const created: string[] = [];
@@ -32,6 +33,7 @@ afterEach(cleanupFixtureDirs);
 export interface MakeAgentOptions {
 	name?: string;
 	description?: string;
+	/** Tool entries as written in the frontmatter, e.g. `["read"]` or `["+codemode", "-write"]`. */
 	tools?: string[] | undefined;
 	skills?: string[] | undefined;
 	contextFiles?: string[] | undefined;
@@ -77,7 +79,7 @@ export function makeAgent(options: MakeAgentOptions = {}): PinnedAgent {
 		name,
 		description: options.description ?? `${name} description`,
 		systemPrompt: options.systemPrompt ?? "append",
-		tools: options.tools,
+		tools: options.tools?.map((raw) => parseToolEntry(raw) ?? { op: "plain", name: raw.trim() }),
 		skills: options.skills,
 		contextFiles: options.contextFiles,
 		model: options.model,

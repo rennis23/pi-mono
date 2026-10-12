@@ -19,7 +19,7 @@ function makeAgent(kind: SourceKind, name = "reviewer", hash = HASH): PinnedAgen
 		name,
 		description: `${name} description`,
 		systemPrompt: "append",
-		tools: ["read"],
+		tools: [{ op: "plain", name: "read" }],
 		skills: undefined,
 		contextFiles: undefined,
 		model: undefined,

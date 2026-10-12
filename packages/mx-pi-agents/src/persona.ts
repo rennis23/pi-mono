@@ -11,6 +11,7 @@
  * switch, so a partial preset is never applied.
  */
 
+import { formatToolEntry, parseToolEntry, resolveToolSelection } from "./tools.js";
 import type {
 	PinnedAgent,
 	SwitchApplied,
@@ -49,6 +50,12 @@ export function dispatchDirective(input: { name: string; known: boolean; hasTask
 export interface SwitchContext {
 	/** Every tool name that resolves in the main session. */
 	availableTools: readonly string[];
+	/**
+	 * Selection the switch inherits — the tools active when the switch runs. A list
+	 * of only `+name`/`-name` entries applies on top of this; a list with a plain
+	 * name replaces it.
+	 */
+	inheritedTools: readonly string[];
 	/** Whether a declared `provider/id` model is available with credentials. */
 	isModelAvailable: (model: string) => boolean;
 }
@@ -60,21 +67,23 @@ export type SwitchOutcome = { ok: true; plan: SwitchPlan } | { ok: false; refusa
  *
  * Absent fields are left untouched (`applied` omits them); present-but-empty
  * `tools` means "no tools", per the total-preset contract. Every declared name
- * must resolve, otherwise nothing is applied.
+ * must resolve, otherwise nothing is applied — a name that resolves but is not in
+ * the inherited selection is a no-op, as in pi.
  */
 export function planSwitch(agent: PinnedAgent, ctx: SwitchContext): SwitchOutcome {
 	const definition = agent.definition;
 	const applied: SwitchApplied = {};
 
 	if (definition.tools !== undefined) {
-		const unresolved = definition.tools.filter((name) => !ctx.availableTools.includes(name));
+		const unresolved = definition.tools.filter((entry) => !ctx.availableTools.includes(entry.name));
 		if (unresolved.length > 0) {
 			return {
 				ok: false,
-				refusal: `agent "${definition.name}" declares tools that do not resolve in the main session: ${unresolved.join(", ")}`,
+				refusal: `agent "${definition.name}" declares tools that do not resolve in the main session: ${unresolved.map(formatToolEntry).join(", ")}`,
 			};
 		}
-		applied.tools = [...definition.tools];
+		applied.tools = resolveToolSelection(definition.tools, ctx.inheritedTools);
+		applied.declared = [...definition.tools];
 	}
 
 	if (definition.model !== undefined) {
@@ -208,9 +217,22 @@ export function parseSwitchEntry(data: unknown): SwitchEntryData | undefined {
 		}
 	}
 
+	const declaredRaw = data.declared;
+	let declared: string[] | undefined;
+	if (declaredRaw !== undefined) {
+		if (!Array.isArray(declaredRaw)) return undefined;
+		declared = [];
+		for (const item of declaredRaw) {
+			const entry = typeof item === "string" ? parseToolEntry(item) : undefined;
+			if (entry === undefined) return undefined;
+			declared.push(formatToolEntry(entry));
+		}
+	}
+
 	return {
 		name: data.name as string | null,
 		mode: data.mode as SystemPromptMode | undefined,
+		declared,
 		baseline: {
 			tools,
 			model: (model ?? undefined) as string | undefined,

@@ -37,6 +37,8 @@ import {
 import { bundledAgentsDir, discoverAgents, type RegistryDirs, rosterEntries, verifyPinned } from "./src/registry.js";
 import { formatSwitchNotice, renderRosterLines } from "./src/render.js";
 import { filterContextFiles, filterSkills } from "./src/resources.js";
+import { sanitizeUiText } from "./src/security.js";
+import { formatToolEntry } from "./src/tools.js";
 import { approvalRequest, checkTrust, gatedAgents, recordApproval, withApprovals } from "./src/trust.js";
 import type {
 	AgentDiagnostic,
@@ -247,6 +249,7 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 				mode: plan.mode,
 				baseline,
 				applied: plan.applied,
+				declared: plan.applied.declared?.map(formatToolEntry),
 				switchedAt: Date.now(),
 			} satisfies SwitchEntryData);
 		} catch {
@@ -259,6 +262,7 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 		if (baseline !== undefined) {
 			const restore = planReset(baseline, {
 				availableTools: mainToolNames(),
+				inheritedTools: currentRuntime(ctx).tools,
 				isModelAvailable: (label) => modelAvailable(ctx, label),
 			});
 			try {
@@ -434,6 +438,7 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 		}
 		const planned = planSwitch(agent, {
 			availableTools: mainToolNames(),
+			inheritedTools: currentRuntime(ctx).tools,
 			isModelAvailable: (label) => modelAvailable(ctx, label),
 		});
 		if (!planned.ok) {
@@ -657,8 +662,15 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 						`agentPaths: ${config.agentPaths.length > 0 ? config.agentPaths.join(", ") : "(none)"}`,
 						`bundled: ${bundledAgentsDir()}`,
 						`active persona: ${active}`,
-						`default persona: ${defaultPersona.trim().length > 0 ? defaultPersona.trim() : "(none)"}`,
 					];
+					if (activeSwitch?.applied.declared !== undefined) {
+						const resolved = activeSwitch.applied.tools ?? [];
+						const declared = activeSwitch.applied.declared.map(formatToolEntry).join(", ");
+						lines.push(
+							`tools: ${sanitizeUiText(declared, 200)} → ${resolved.length > 0 ? resolved.join(", ") : "(none)"}`,
+						);
+					}
+					lines.push(`default persona: ${defaultPersona.trim().length > 0 ? defaultPersona.trim() : "(none)"}`);
 					ctx.ui.notify(lines.join("\n"), "info");
 					return;
 				}
