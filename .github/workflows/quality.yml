@@ -1,5 +1,7 @@
 name: Quality and security
 
+# Changed-source mutation testing runs on CircleCI (.circleci/config.yml).
+
 on:
   pull_request:
   push:
@@ -46,26 +48,6 @@ jobs:
       - run: npm ci
       - run: npm run security:packages
       - run: npm run security:audit
-
-  mutation-changed:
-    name: mutation-changed
-    runs-on: ubuntu-latest
-    steps:
-      # v4.2.2
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          fetch-depth: 0
-      # v4.4.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
-      - name: Mutate changed package source
-        env:
-          BASE_SHA: >-
-            ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: npm run mutation:changed -- "$BASE_SHA"
 
   codeql:
     name: codeql
