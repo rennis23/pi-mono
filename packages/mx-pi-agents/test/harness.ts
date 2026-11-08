@@ -18,7 +18,30 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { createEventBus, type EventBus } from "@earendil-works/pi-coding-agent";
 import { vi } from "vitest";
-import type { ThinkingLevel } from "../src/types.js";
+import { unavailableRunner } from "../src/runner.js";
+import type { RunResult, ThinkingLevel } from "../src/types.js";
+import { zeroUsage } from "../src/types.js";
+
+/** The failure result shape a runner reports when no backend is available. */
+export function unavailable(): RunResult {
+	return {
+		agent: "(none)",
+		ok: false,
+		partial: false,
+		stopped: "child-error",
+		text: "",
+		truncated: false,
+		durationMs: 0,
+		turns: 0,
+		usage: zeroUsage(),
+		stopReason: undefined,
+		errorMessage: "unavailable",
+		diagnostics: [],
+	};
+}
+
+/** Re-exported for tests that build their own runner registry. */
+export { unavailableRunner };
 
 /** Theme that echoes plain text, keeping assertions free of ANSI codes. */
 export const mockTheme = {

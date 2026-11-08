@@ -76,24 +76,23 @@ import {
 	renderRosterLines,
 } from "./src/render.js";
 import { filterContextFiles, filterSkills } from "./src/resources.js";
-import { type RunnerRegistry, selectRunner, unavailableRunner } from "./src/runner.js";
+import { type RunnerRegistry, selectRunner } from "./src/runner.js";
 import { createInProcessRunner } from "./src/runners/in-process.js";
 import { isSandboxAvailable } from "./src/runners/sandbox.js";
 import { CHILD_ENV_MARKER, createSubprocessRunner } from "./src/runners/subprocess.js";
 import { CHILD_TELEMETRY_CHANNEL, type ChildTelemetrySink } from "./src/telemetry.js";
 import { approvalRequest, checkTrust, gatedAgents, recordApproval, withApprovals } from "./src/trust.js";
-import {
-	type AgentDiagnostic,
-	type PinnedAgent,
-	type RunPlan,
-	type RunResult,
-	type SwitchApplied,
-	type SwitchBaseline,
-	type SwitchEntryData,
-	type SwitchPlan,
-	type SystemPromptMode,
-	type ThinkingLevel,
-	zeroUsage,
+import type {
+	AgentDiagnostic,
+	PinnedAgent,
+	RunPlan,
+	RunResult,
+	SwitchApplied,
+	SwitchBaseline,
+	SwitchEntryData,
+	SwitchPlan,
+	SystemPromptMode,
+	ThinkingLevel,
 } from "./src/types.js";
 
 const CHILD_MARKER_VALUE = "1";
@@ -1300,24 +1299,3 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 		},
 	});
 }
-
-// Keep the failure result shape available to callers that build their own
-// runner (used by the security acceptance suite).
-export function unavailable(): RunResult {
-	return {
-		agent: "(none)",
-		ok: false,
-		partial: false,
-		stopped: "child-error",
-		text: "",
-		truncated: false,
-		durationMs: 0,
-		turns: 0,
-		usage: zeroUsage(),
-		stopReason: undefined,
-		errorMessage: "unavailable",
-		diagnostics: [],
-	};
-}
-
-export { unavailableRunner };

@@ -11,9 +11,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import mxPiAgents, { unavailable } from "./index.js";
+import mxPiAgents from "./index.js";
 import { CHILD_TELEMETRY_CHANNEL } from "./src/telemetry.js";
-import { createHarness, type Harness, mockTheme } from "./test/harness.js";
+import { createHarness, type Harness, mockTheme, unavailable } from "./test/harness.js";
 
 const settingsState = vi.hoisted(() => ({
 	values: { defaultPersona: "" } as Record<string, string>,
