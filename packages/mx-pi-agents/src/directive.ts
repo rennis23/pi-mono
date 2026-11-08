@@ -1,30 +1,40 @@
 /**
  * Parser for the `#` invocation directive used by the TUI input handler.
  *
- * Grammar (normative for this package):
+ * Grammar (normative, see the plan):
  *
- *   directive := ws? "#" name _ws task
- *   task      := anything (trimmed); absent means no task
+ *   directive := ws? "#" name          _ws task
+ *              | ws? "#" "[" pipeline "]" _ws task
+ *   pipeline  := stage ( ws? ">" ws? stage )*
+ *   stage     := name  ( ws? "," ws? name  )*
  *   name      := [A-Za-z0-9][A-Za-z0-9_-]{0,63}
- *
- * Delegation was removed in the persona-only extraction, so a bracketed
- * `#[…]` pipeline is reported as an error instead of being parsed.
  *
  * This module is pure and pi-free: it takes editor text and returns a
  * `Directive` or a ready-to-display error message. It never touches the
  * registry, a session or a model.
  */
 
-/** A parsed directive: the agent name and the optional task text. */
+/** Hard cap on how many stages one directive may declare (same as the task cap). */
+export const MAX_PIPELINE_STAGES = 8;
+
+/** One pipeline stage. More than one agent means a parallel group. */
+export interface DirectiveStage {
+	agents: string[];
+}
+
+/** A parsed directive: the stages to run and the stage-1 task. */
 export interface Directive {
-	name: string;
-	/** Task text; `undefined` means the directive had no task. */
+	stages: DirectiveStage[];
+	/** Stage-1 task; `undefined` means the directive had no task text. */
 	task: string | undefined;
+	/** True for a bracketed `#[…]` pipeline; false for a bare `#name`. */
+	pipeline: boolean;
 }
 
 export type DirectiveOutcome = { ok: true; directive: Directive } | { ok: false; message: string };
 
-const USAGE = 'Usage: "#name [prompt]" or "#none"';
+const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const USAGE = 'Usage: "#agent [prompt]" or "#[a > b, c] <prompt>"';
 
 /**
  * Parse an editor input into a directive.
@@ -38,12 +48,7 @@ export function parseDirective(text: string): DirectiveOutcome | undefined {
 	const lead = text.match(/^[ \t]*#/);
 	if (!lead) return undefined;
 	const rest = text.slice(lead[0].length);
-	if (rest.startsWith("[")) {
-		return {
-			ok: false,
-			message: `bracketed pipelines were removed in mx-pi-agents. ${USAGE}`,
-		};
-	}
+	if (rest.startsWith("[")) return parsePipeline(rest.slice(1));
 	return parseSingle(rest);
 }
 
@@ -65,17 +70,67 @@ function parseSingle(rest: string): DirectiveOutcome {
 		return { ok: false, message: `invalid agent name in directive. ${USAGE}` };
 	}
 
-	// A pipeline delimiter next to a bare name is a removed-pipeline typo.
+	// D10: a pipeline delimiter next to a bare name is a bracketed-pipeline typo.
 	if (/^[ \t]*[>,]/.test(afterName)) {
 		return {
 			ok: false,
-			message: `pipelines were removed in mx-pi-agents. ${USAGE}`,
+			message: `pipelines require brackets: "#[${name} > other]". ${USAGE}`,
 		};
 	}
 
-	// A single name may stand alone; a `replace`/`append` switch uses the task
-	// as the first prompt under the new persona.
+	// A single name may stand alone: the kind decides whether it switches the
+	// main session (persona/main) or delegates (sub). Only pipelines require a
+	// task text.
 	const taskMatch = afterName.match(/^[ \t]+([\s\S]*)$/);
 	const task = taskMatch ? taskMatch[1].trim() : "";
-	return { ok: true, directive: { name, task: task.length > 0 ? task : undefined } };
+	return {
+		ok: true,
+		directive: { stages: [{ agents: [name] }], task: task.length > 0 ? task : undefined, pipeline: false },
+	};
+}
+
+function parsePipeline(body: string): DirectiveOutcome {
+	const close = body.indexOf("]");
+	if (close === -1) {
+		return { ok: false, message: `unclosed pipeline: missing "]". ${USAGE}` };
+	}
+
+	const pipelineText = body.slice(0, close);
+	const taskText = body.slice(close + 1);
+	if (pipelineText.trim().length === 0) {
+		return { ok: false, message: `empty pipeline. ${USAGE}` };
+	}
+
+	const rawStages = pipelineText.split(">");
+	if (rawStages.length > MAX_PIPELINE_STAGES) {
+		return {
+			ok: false,
+			message: `too many stages (${rawStages.length}). Max is ${MAX_PIPELINE_STAGES}.`,
+		};
+	}
+
+	const taskMatch = taskText.match(/^[ \t]+([\s\S]*)$/);
+	const task = taskMatch ? taskMatch[1].trim() : "";
+	if (task.length === 0) {
+		return { ok: false, message: `pipeline directive is missing a prompt. ${USAGE}` };
+	}
+
+	const stages: DirectiveStage[] = [];
+	for (const rawStage of rawStages) {
+		const rawNames = rawStage.split(",");
+		const agents: string[] = [];
+		for (const rawName of rawNames) {
+			const name = rawName.trim();
+			if (name.length === 0) {
+				return { ok: false, message: `empty stage or dangling delimiter in pipeline. ${USAGE}` };
+			}
+			if (!NAME_RE.test(name)) {
+				return { ok: false, message: `invalid agent name "${name}" in pipeline. ${USAGE}` };
+			}
+			agents.push(name);
+		}
+		stages.push({ agents });
+	}
+
+	return { ok: true, directive: { stages, task, pipeline: true } };
 }

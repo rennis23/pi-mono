@@ -2,9 +2,12 @@
  * mx-pi-agents shared types.
  *
  * Everything in `src/` is pure logic over these types; pi types only appear at
- * the wiring edge (`index.ts`). Keeping the contracts here means the registry,
- * trust and persona layers are unit-testable without loading pi or a TUI.
+ * the wiring edges (`index.ts`, `src/runners/*`). Keeping the contracts here
+ * means the registry, policy and budget layers are unit-testable without
+ * loading pi or a TUI.
  */
+
+import type { ChildTelemetrySink } from "./telemetry.js";
 
 /**
  * Thinking level. Mirrors pi-agent-core's union structurally so this package
@@ -23,11 +26,20 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
  */
 export type SystemPromptMode = "replace" | "append";
 
+/** How a child session is executed. */
+export type IsolationMode = "process" | "subprocess";
+
+/** Optional OS-level sandbox applied to a child's `bash` tool. */
+export type SandboxMode = "none" | "os";
+
 /**
  * Where a definition came from. `bundled` and `global` are trusted; `config`
  * (extra `agentPaths`) and `project` (`.pi/agents`) are gated behind approval.
  */
 export type SourceKind = "bundled" | "global" | "config" | "project";
+
+/** How a definition with no explicit `tools:` derives its grant set. */
+export type ToolsInheritance = "none" | "parent";
 
 /** Validated contents of one agent definition file. */
 export interface AgentDefinition {
@@ -35,16 +47,27 @@ export interface AgentDefinition {
 	description: string;
 	/** How the body mutates the main system prompt. Absent frontmatter = `append`. */
 	systemPrompt: SystemPromptMode;
+	/** True when the definition may only run as a child (tool, `#[…]`, or delegation). */
+	subAgentOnly: boolean;
+	/** True when the definition may only run in the main session and never as a child. */
+	mainAgentOnly: boolean;
 	/**
-	 * Main-session tool preset. `undefined` means the field was absent (leave the
-	 * active tools untouched); `[]` means the field was present and empty (no
-	 * tools); a list is an exact preset.
+	 * Explicit grant set. `undefined` means the field was absent (inheritance
+	 * decides); `[]` means the field was present and empty (no tools).
 	 */
 	tools: string[] | undefined;
+	toolsInheritance: ToolsInheritance;
+	/**
+	 * Directory roots this agent may touch. `undefined` means absent (the run's
+	 * cwd); `[]` means the field was present and empty, which is a refusal.
+	 * Entries tighten the configured ceiling and are resolved against the cwd.
+	 */
+	scope: string[] | undefined;
 	/**
 	 * Main-session skill allow-list. `undefined` means the field was absent (all
 	 * loaded skills survive the switch); `[]` means the field was present and
-	 * empty (no skills). Enforced while this definition is the active switch.
+	 * empty (no skills). Ignored for child runs; enforced while this definition
+	 * is the active main-session switch.
 	 */
 	skills: string[] | undefined;
 	/**
@@ -52,9 +75,21 @@ export interface AgentDefinition {
 	 * cwd-relative path or basename. Same absent/empty semantics as `skills`.
 	 */
 	contextFiles: string[] | undefined;
+	/**
+	 * Main-session delegation. When `true`, a main-session switch guarantees
+	 * `mx_pi_agent` is in the active tool set. Ignored for child runs, which
+	 * never receive a spawn-capable grant (invariant 8).
+	 */
+	delegate: boolean;
 	model: string | undefined;
 	thinking: ThinkingLevel | undefined;
-	/** Markdown body, trimmed. How it mutates the prompt is decided by `systemPrompt`. */
+	maxTurns: number | undefined;
+	timeoutMs: number | undefined;
+	tokenBudget: number | undefined;
+	costBudget: number | undefined;
+	isolation: IsolationMode;
+	sandbox: SandboxMode;
+	/** Markdown body, trimmed. Becomes the child's system prompt (plus a header). */
 	body: string;
 }
 
@@ -93,6 +128,116 @@ export interface RegistrySnapshot {
 	pinnedAt: number;
 }
 
+/** Token/cost usage accumulated from a child run. */
+export interface TokenUsage {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cost: number;
+	/** Last observed total context size, when the runner can report it. */
+	contextTokens: number;
+}
+
+export function zeroUsage(): TokenUsage {
+	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0 };
+}
+
+/** Hard caps applied to a single child run. */
+export interface Budgets {
+	maxTurns: number;
+	timeoutMs: number;
+	tokenBudget: number;
+	costBudget: number | undefined;
+}
+
+/** Why a run was refused before any child session was created. */
+export type RefusalReason =
+	| "unknown-agent"
+	| "unapproved-project-agent"
+	| "definition-changed"
+	| "definition-invalid"
+	| "unresolved-tool"
+	| "spawn-tool-grant"
+	| "scope-invalid"
+	| "scope-unenforceable"
+	| "recursion"
+	| "model-unavailable"
+	| "sandbox-unavailable"
+	| "main-agent-only"
+	| "invalid-request"
+	| "child-session";
+
+/** A refusal. Never carries a runnable plan. */
+export interface Refusal {
+	reason: RefusalReason;
+	message: string;
+	diagnostics: AgentDiagnostic[];
+}
+
+export type PlanOutcome = { ok: true; plan: RunPlan } | { ok: false; refusal: Refusal };
+
+/** Everything a runner needs to start one child session. Computed, never declared. */
+export interface RunPlan {
+	agentName: string;
+	source: AgentSource;
+	task: string;
+	/** Effective grant set. Never inferred beyond the §4.4 contract. */
+	tools: string[];
+	/** `"all"` when the grant set is empty, so pi starts with no tools at all. */
+	noTools: "all" | undefined;
+	model: string | undefined;
+	thinking: ThinkingLevel | undefined;
+	systemPrompt: string;
+	budgets: Budgets;
+	isolation: IsolationMode;
+	sandbox: SandboxMode;
+	cwd: string;
+	/**
+	 * Effective path scope. `roots` are absolute directories the run may touch;
+	 * `unrestricted` is true only when an explicit `/` ceiling licensed an
+	 * unconfineable vector, in which case tool wrapping is skipped.
+	 */
+	scope: { roots: readonly string[]; unrestricted: boolean };
+	diagnostics: AgentDiagnostic[];
+}
+
+/** Terminal state of one child run. */
+export interface RunResult {
+	agent: string;
+	/** False when the run refused, aborted, hit a budget, or the child errored. */
+	ok: boolean;
+	/** True when the run was cut short by a budget and the text is partial. */
+	partial: boolean;
+	/** Why the run stopped early: a budget breach, abort, or child error. */
+	stopped: "budget-turns" | "budget-time" | "budget-tokens" | "budget-cost" | "aborted" | "child-error" | undefined;
+	/** Final assistant text, already capped. */
+	text: string;
+	/** True when `text` was truncated by the output cap. */
+	truncated: boolean;
+	durationMs: number;
+	turns: number;
+	usage: TokenUsage;
+	stopReason: string | undefined;
+	errorMessage: string | undefined;
+	diagnostics: AgentDiagnostic[];
+}
+
+/** Options passed to a runner for one run. */
+export interface RunOptions {
+	/** External cancellation (parent tool call aborted). */
+	signal: AbortSignal;
+	/** Streaming partial results, used for tool-call progress updates. */
+	onUpdate?: (partial: RunResult) => void;
+	/** Injected clock; tests pass a controllable one. */
+	now: () => number;
+	/**
+	 * When set, the runner publishes the child's lifecycle events for tracing.
+	 * Absent means no telemetry is collected or forwarded.
+	 */
+	telemetry?: ChildTelemetrySink;
+}
+
 /**
  * Runtime state captured before the first main-session switch of a session.
  * `#none` restores exactly this; it survives later switches.
@@ -112,11 +257,13 @@ export interface SwitchApplied {
 }
 
 /**
- * A switch plan produced by the pure persona module. The wiring layer applies
- * it verbatim; it never interprets it.
+ * A main-session switch plan produced by the pure persona module. The wiring
+ * layer applies it verbatim; it never interprets it. The prompt body is read
+ * from the pinned definition at apply time, never cached here.
  */
 export interface SwitchPlan {
 	name: string;
+	/** How the definition body mutates the main system prompt. */
 	mode: SystemPromptMode;
 	applied: SwitchApplied;
 }
@@ -131,4 +278,10 @@ export interface SwitchEntryData {
 	baseline: SwitchBaseline;
 	applied?: SwitchApplied;
 	switchedAt: number;
+}
+
+/** Executes one planned run. Implementations: in-process and subprocess. */
+export interface Runner {
+	readonly kind: IsolationMode;
+	run(plan: RunPlan, options: RunOptions): Promise<RunResult>;
 }

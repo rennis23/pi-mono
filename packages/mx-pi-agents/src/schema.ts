@@ -3,18 +3,17 @@
  *
  * The schema is intentionally small and total: every field is validated, an
  * unknown field drops the definition, and errors carry a readable reason. The
- * `system_prompt` mode is parsed fail-closed: absent means `append`, and any
- * value that is not exactly `replace` or `append` drops the definition rather
- * than falling back to a permissive default.
+ * effective-grant contract from the design (§4.4) lives here too, because it is
+ * a pure function of the declaration plus the parent's tool set.
  */
 
 import { parseFrontmatter } from "./frontmatter.js";
 import { sanitizeUiText } from "./security.js";
-import type { AgentDefinition, SystemPromptMode, ThinkingLevel } from "./types.js";
+import type { AgentDefinition, AgentDiagnostic, SystemPromptMode, ThinkingLevel, ToolsInheritance } from "./types.js";
 
 /** Name charset: lowercase slug, starts alphanumeric, max 64 chars. */
 const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-/** Tool names come from pi (`read`, `mcp__srv__tool`, …). */
+/** Tool names come from pi (`read`, `mcp__srv__tool`, `mx_pi_agent`, …). */
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 /** Model labels are `provider/model-id` or a bare model id. */
 const MODEL_PATTERN = /^[A-Za-z0-9._/:-]{1,200}$/;
@@ -24,14 +23,27 @@ const MODEL_PATTERN = /^[A-Za-z0-9._/:-]{1,200}$/;
  */
 const SKILL_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$/;
 const MAX_SKILL_NAME_CHARS = 64;
-/** Path entries: non-empty, no control characters, bounded length. */
+/** Scope entries: non-empty, no control characters, bounded length. */
 const PATH_ENTRY_PATTERN = /^[^\u0000-\u001F\u007F]{1,1024}$/;
 const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const SYSTEM_PROMPT_MODES: readonly SystemPromptMode[] = ["replace", "append"];
 /** The reset name always wins; a definition may never claim it. */
 export const RESERVED_AGENT_NAME = "none";
 
+export const MAX_MAX_TURNS = 1_000;
+export const MAX_TIMEOUT_MS = 86_400_000;
+export const MAX_TOKEN_BUDGET = 20_000_000;
+export const MAX_COST_BUDGET = 1_000;
 export const MAX_DESCRIPTION_CHARS = 512;
+
+/** Tool names that can start another agent run; never inherited. */
+export const DEFAULT_SPAWN_TOOL_NAMES: readonly string[] = [
+	"mx_pi_agent",
+	"subagent",
+	"spawn_subagent",
+	"subagent_task",
+	"Task",
+];
 
 export type DefinitionParseResult = { ok: true; definition: AgentDefinition } | { ok: false; error: string };
 
@@ -54,7 +66,60 @@ function readString(data: Record<string, unknown>, key: string, errors: string[]
 	return value.trim();
 }
 
-/** Read a string-list field of tool names, deduping while preserving order. */
+/** Read an integer field with bounds; out-of-range or non-int fails. */
+function readInt(
+	data: Record<string, unknown>,
+	key: string,
+	min: number,
+	max: number,
+	errors: string[],
+): number | undefined {
+	const value = data[key];
+	if (value === undefined || value === null) return undefined;
+	if (typeof value !== "number" || !Number.isInteger(value)) {
+		errors.push(`${key} must be an integer`);
+		return undefined;
+	}
+	if (value < min || value > max) {
+		errors.push(`${key} must be between ${min} and ${max}`);
+		return undefined;
+	}
+	return value;
+}
+
+/** Read a boolean field; absent/undefined/null means `false`; wrong type fails. */
+function readBool(data: Record<string, unknown>, key: string, errors: string[]): boolean {
+	const value = data[key];
+	if (value === undefined || value === null) return false;
+	if (typeof value !== "boolean") {
+		errors.push(`${key} must be a boolean`);
+		return false;
+	}
+	return value;
+}
+
+/** Read a finite number field with bounds (cost budgets can be fractional). */
+function readNumber(
+	data: Record<string, unknown>,
+	key: string,
+	min: number,
+	max: number,
+	errors: string[],
+): number | undefined {
+	const value = data[key];
+	if (value === undefined || value === null) return undefined;
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		errors.push(`${key} must be a number`);
+		return undefined;
+	}
+	if (value < min || value > max) {
+		errors.push(`${key} must be between ${min} and ${max}`);
+		return undefined;
+	}
+	return value;
+}
+
+/** Read a string-list field, deduping while preserving order. */
 function readToolList(data: Record<string, unknown>, key: string, errors: string[]): string[] | undefined {
 	const value = data[key];
 	if (value === undefined) return undefined;
@@ -126,21 +191,31 @@ const KNOWN_FIELDS = new Set([
 	"name",
 	"description",
 	"system_prompt",
+	"sub_agent_only",
+	"main_agent_only",
 	"tools",
+	"tools_inheritance",
+	"scope",
 	"skills",
 	"context_files",
 	"model",
 	"thinking",
+	"max_turns",
+	"timeout_ms",
+	"token_budget",
+	"cost_budget",
+	"isolation",
+	"sandbox",
+	"delegate",
 ]);
 
 /**
  * Validate a frontmatter map into an `AgentDefinition`.
  *
- * Fails (drops the definition) on: missing/invalid name or description, unknown
- * fields, wrong value types, an out-of-range `thinking` value, an invalid
- * `system_prompt` value, and empty bodies. It never defaults a capability:
- * `tools`/`skills`/`context_files` stay `undefined` when absent so the switch
- * can distinguish "absent" from "empty".
+ * Fails (drops the definition) on: missing/!valid name or description, unknown
+ * fields, wrong value types, out-of-range numbers, and empty bodies. It never
+ * defaults a capability: `tools` stays `undefined` when absent so the grant
+ * contract can distinguish "absent" from "empty".
  */
 export function definitionFromRaw(data: Record<string, unknown>): DefinitionParseResult {
 	const errors: string[] = [];
@@ -165,12 +240,13 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 	}
 
 	const tools = readToolList(data, "tools", errors);
+	const scope = readPathList(data, "scope", errors);
 	const skills = readSkillList(data, "skills", errors);
 	const contextFiles = readPathList(data, "context_files", errors);
 
-	// Mode parsing is total and fail-closed: absent means `append`; a value that
-	// is not exactly one of the two strings (or is not a string) fails the whole
-	// definition rather than falling back to a permissive default.
+	// system_prompt parsing is total and fail-closed: absent means `append`; a
+	// value that is not exactly one of the two modes (or is not a string) fails
+	// the whole definition rather than falling back to a permissive default.
 	let systemPrompt: SystemPromptMode = "append";
 	if (data.system_prompt !== undefined && data.system_prompt !== null) {
 		if (
@@ -180,6 +256,24 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 			systemPrompt = data.system_prompt as SystemPromptMode;
 		} else {
 			errors.push(`system_prompt must be one of: ${SYSTEM_PROMPT_MODES.join(", ")}`);
+		}
+	}
+
+	// Sub-/main-only parsing is total: both default to false, and the two
+	// booleans may never both be true — a definition cannot be exclusively
+	// usable in exactly one session when it claims both sessions.
+	const subAgentOnly = readBool(data, "sub_agent_only", errors);
+	const mainAgentOnly = readBool(data, "main_agent_only", errors);
+	if (subAgentOnly && mainAgentOnly) {
+		errors.push("sub_agent_only and main_agent_only are mutually exclusive");
+	}
+
+	let toolsInheritance: ToolsInheritance = "none";
+	if (data.tools_inheritance !== undefined && data.tools_inheritance !== null) {
+		if (data.tools_inheritance === "none" || data.tools_inheritance === "parent") {
+			toolsInheritance = data.tools_inheritance;
+		} else {
+			errors.push('tools_inheritance must be "none" or "parent"');
 		}
 	}
 
@@ -195,6 +289,30 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 		}
 	}
 
+	const maxTurns = readInt(data, "max_turns", 1, MAX_MAX_TURNS, errors);
+	const timeoutMs = readInt(data, "timeout_ms", 1_000, MAX_TIMEOUT_MS, errors);
+	const tokenBudget = readInt(data, "token_budget", 1_000, MAX_TOKEN_BUDGET, errors);
+	const costBudget = readNumber(data, "cost_budget", 0, MAX_COST_BUDGET, errors);
+	const delegate = readBool(data, "delegate", errors);
+
+	let isolation: AgentDefinition["isolation"] = "process";
+	if (data.isolation !== undefined && data.isolation !== null) {
+		if (data.isolation === "process" || data.isolation === "subprocess") {
+			isolation = data.isolation;
+		} else {
+			errors.push('isolation must be "process" or "subprocess"');
+		}
+	}
+
+	let sandbox: AgentDefinition["sandbox"] = "none";
+	if (data.sandbox !== undefined && data.sandbox !== null) {
+		if (data.sandbox === "none" || data.sandbox === "os") {
+			sandbox = data.sandbox;
+		} else {
+			errors.push('sandbox must be "none" or "os"');
+		}
+	}
+
 	if (errors.length > 0) return parseFailure(`invalid agent definition: ${errors.join("; ")}`);
 
 	return {
@@ -203,11 +321,22 @@ export function definitionFromRaw(data: Record<string, unknown>): DefinitionPars
 			name: rawName!,
 			description: rawDescription!,
 			systemPrompt,
+			subAgentOnly,
+			mainAgentOnly,
 			tools,
+			toolsInheritance,
+			scope,
 			skills,
 			contextFiles,
 			model,
 			thinking,
+			maxTurns,
+			timeoutMs,
+			tokenBudget,
+			costBudget,
+			delegate,
+			isolation,
+			sandbox,
 			body: "",
 		},
 	};
@@ -224,4 +353,81 @@ export function parseAgentDefinition(content: string): DefinitionParseResult {
 	if (parsed.body.length === 0) return parseFailure("definition body is empty");
 
 	return { ok: true, definition: { ...result.definition, body: parsed.body } };
+}
+
+/** Options for computing a grant set. */
+export interface GrantOptions {
+	/** Tool names active in the parent session. */
+	parentTools: readonly string[];
+	/** Tool names that resolve inside the child (built-ins plus custom tools). */
+	availableTools: readonly string[];
+	/** Spawn-capable names excluded from inheritance. Defaults to the built-in list. */
+	spawnToolNames?: readonly string[];
+}
+
+/** Effective grant set plus what a refusal decision needs. */
+export interface GrantOutcome {
+	/** Final grant set. For explicit grants this is the declared set, even when unresolved. */
+	tools: string[];
+	/** `"all"` when the grant set is empty, so the child starts with no tools. */
+	noTools: "all" | undefined;
+	/** Explicit names that do not resolve in the child; any entry means refuse. */
+	unresolvedExplicit: string[];
+	diagnostics: AgentDiagnostic[];
+}
+
+/**
+ * Apply the total grant contract (§4.4):
+ *
+ * - `tools: [a, b]` → exactly `{a, b}`
+ * - `tools: []` → ∅
+ * - `tools` absent + `tools_inheritance: none` (default) → ∅
+ * - `tools` absent + `tools_inheritance: parent` → parent tools minus spawn-capable names
+ * - `tools_inheritance` is ignored when `tools` is present
+ *
+ * Nothing else can widen the grant: an empty result always becomes `noTools: "all"`.
+ */
+export function computeEffectiveTools(
+	grant: Pick<AgentDefinition, "tools" | "toolsInheritance">,
+	options: GrantOptions,
+): GrantOutcome {
+	const diagnostics: AgentDiagnostic[] = [];
+	const available = new Set(options.availableTools);
+	const spawn = new Set(options.spawnToolNames ?? DEFAULT_SPAWN_TOOL_NAMES);
+
+	let tools: string[];
+	let unresolvedExplicit: string[] = [];
+
+	if (grant.tools !== undefined) {
+		tools = [...grant.tools];
+		unresolvedExplicit = tools.filter((name) => !available.has(name));
+		if (grant.toolsInheritance === "parent") {
+			diagnostics.push({
+				level: "info",
+				message: "tools_inheritance is ignored when tools is present",
+			});
+		}
+	} else if (grant.toolsInheritance === "parent") {
+		tools = [];
+		for (const name of options.parentTools) {
+			if (spawn.has(name)) continue;
+			if (!available.has(name)) {
+				diagnostics.push({
+					level: "warning",
+					message: `inherited tool "${name}" does not resolve in the child and was dropped`,
+				});
+				continue;
+			}
+			if (!tools.includes(name)) tools.push(name);
+		}
+	} else {
+		tools = [];
+	}
+
+	return {
+		tools,
+		noTools: tools.length === 0 ? "all" : undefined,
+		unresolvedExplicit,
+		diagnostics,
+	};
 }

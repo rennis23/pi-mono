@@ -167,6 +167,13 @@ export function discoverAgents(dirs: RegistryDirs, now: () => number): Discovery
 				});
 				continue;
 			}
+			if (parsed.definition.subAgentOnly && parsed.definition.delegate) {
+				diagnostics.push({
+					level: "warning",
+					message: `delegate is ignored on subagent "${name}": sub agents never run in the main session`,
+					path,
+				});
+			}
 			const existing = byName.get(name);
 
 			if (existing) {
@@ -283,26 +290,34 @@ export function verifyPinned(agent: PinnedAgent): VerifyResult {
 export interface RosterEntry {
 	name: string;
 	description: string;
-	mode: SystemPromptMode;
+	/** Prompt mode for a main-session switch; `sub` marks a sub-agent-only definition. */
+	kind: SystemPromptMode | "sub";
 	source: SourceKind;
 	path: string;
 	trusted: boolean;
 	hash: string;
 	tools: string | undefined;
+	isolation: string;
+	sandbox: string;
 	model: string | undefined;
+	/** True when the definition declares main-session delegation. */
+	delegate: boolean;
 }
 
 export function rosterEntries(agents: readonly PinnedAgent[]): RosterEntry[] {
 	return agents.map((agent) => ({
 		name: sanitizeUiText(agent.definition.name, 64),
 		description: sanitizeUiText(agent.definition.description, 120),
-		mode: agent.definition.systemPrompt,
+		kind: agent.definition.subAgentOnly ? "sub" : agent.definition.systemPrompt,
 		source: agent.source.kind,
 		path: sanitizeUiText(agent.source.path, 200),
 		trusted: agent.source.trusted,
 		hash: agent.hash.slice(0, 12),
 		tools: agent.definition.tools ? sanitizeUiText(agent.definition.tools.join(","), 200) : undefined,
+		isolation: agent.definition.isolation,
+		sandbox: agent.definition.sandbox,
 		model: agent.definition.model ? sanitizeUiText(agent.definition.model, 80) : undefined,
+		delegate: agent.definition.delegate,
 	}));
 }
 

@@ -22,33 +22,49 @@ import type {
 } from "./types.js";
 
 /** What a single-name `#name [task]` directive should do. */
-export type DirectiveDispatch = { action: "reset" } | { action: "switch" } | { action: "refuse"; message: string };
+export type DirectiveDispatch =
+	| { action: "reset" }
+	| { action: "switch"; mode: SystemPromptMode }
+	| { action: "delegate" }
+	| { action: "refuse"; message: string };
 
 /** Name of the built-in reset directive. A definition may never claim it. */
 export const RESET_NAME = "none";
 
 /**
- * Decide what a single-name directive does.
+ * Decide what a single-name directive does, from the resolved definition.
  *
- * `known` is false when no definition owns the name, so an unknown name refuses
- * here rather than reaching the model. Gating is checked by the caller, which
- * runs the approval flow before planning the switch.
+ * `definition` is `undefined` when no definition owns the name, so an unknown
+ * name refuses here rather than reaching the model or the delegation path.
  */
-export function dispatchDirective(input: { name: string; known: boolean; hasTask: boolean }): DirectiveDispatch {
+export function dispatchDirective(input: {
+	name: string;
+	definition: { systemPrompt: SystemPromptMode; subAgentOnly: boolean } | undefined;
+	hasTask: boolean;
+}): DirectiveDispatch {
 	if (input.name === RESET_NAME) {
 		if (input.hasTask) return { action: "refuse", message: `"#${RESET_NAME}" takes no task.` };
 		return { action: "reset" };
 	}
-	if (!input.known) {
+	if (input.definition === undefined) {
 		return { action: "refuse", message: `unknown agent "#${input.name}".` };
 	}
-	return { action: "switch" };
+	if (input.definition.subAgentOnly) {
+		if (!input.hasTask) return { action: "refuse", message: `subagent "${input.name}" needs a task.` };
+		return { action: "delegate" };
+	}
+	return { action: "switch", mode: input.definition.systemPrompt };
 }
+
+/** The spawn-capable tool a delegating main-session switch keeps active. */
+export const DELEGATE_TOOL = "mx_pi_agent";
 
 /** Runtime facts the main-session switch needs. None come from the target repo. */
 export interface SwitchContext {
 	/** Every tool name that resolves in the main session. */
 	availableTools: readonly string[];
+	/** Names currently active in the main session (`pi.getActiveTools()`). */
+	currentTools: readonly string[];
 	/** Whether a declared `provider/id` model is available with credentials. */
 	isModelAvailable: (model: string) => boolean;
 }
@@ -59,14 +75,32 @@ export type SwitchOutcome = { ok: true; plan: SwitchPlan } | { ok: false; refusa
  * Build a switch plan or refuse.
  *
  * Absent fields are left untouched (`applied` omits them); present-but-empty
- * `tools` means "no tools", per the total-preset contract. Every declared name
+ * `tools` means "no tools", per the total-grants contract. Every declared name
  * must resolve, otherwise nothing is applied.
  */
 export function planSwitch(agent: PinnedAgent, ctx: SwitchContext): SwitchOutcome {
 	const definition = agent.definition;
+	if (definition.subAgentOnly) {
+		return { ok: false, refusal: `agent "${definition.name}" is not a main-session agent.` };
+	}
+
 	const applied: SwitchApplied = {};
 
-	if (definition.tools !== undefined) {
+	if (definition.delegate) {
+		// The declared preset wins; otherwise union the delegate tool onto whatever
+		// is active now, so switching from a narrowed agent (#planner) to an
+		// orchestrator restores the delegation capability.
+		const base = definition.tools ?? ctx.currentTools;
+		const merged = [...new Set([...base, DELEGATE_TOOL])];
+		const unresolved = merged.filter((name) => !ctx.availableTools.includes(name));
+		if (unresolved.length > 0) {
+			return {
+				ok: false,
+				refusal: `agent "${definition.name}" declares tools that do not resolve in the main session: ${unresolved.join(", ")}`,
+			};
+		}
+		applied.tools = merged;
+	} else if (definition.tools !== undefined) {
 		const unresolved = definition.tools.filter((name) => !ctx.availableTools.includes(name));
 		if (unresolved.length > 0) {
 			return {
@@ -177,7 +211,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function parseSwitchEntry(data: unknown): SwitchEntryData | undefined {
 	if (!isRecord(data)) return undefined;
 	if (data.name !== null && typeof data.name !== "string") return undefined;
-	if (data.mode !== undefined && data.mode !== "replace" && data.mode !== "append") return undefined;
+	if (data.name !== null && data.mode !== "replace" && data.mode !== "append") return undefined;
 	if (typeof data.switchedAt !== "number" || !Number.isFinite(data.switchedAt)) return undefined;
 
 	const baseline = data.baseline;

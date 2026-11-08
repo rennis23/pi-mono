@@ -1,23 +1,23 @@
 /**
  * Trust and approval.
  *
- * Trusted sources (bundled, global) apply without a gate. Gated sources (config
+ * Trusted sources (bundled, global) run without a gate. Gated sources (config
  * `agentPaths`, project `.pi/agents`) require an explicit approval whose hash
  * matches the current file. There is no "approve this directory" mode: an edit
- * invalidates the approval and the next switch refuses until re-approved.
+ * invalidates the approval and the next run refuses until re-approved.
  *
- * Headless sessions (no dialog UI) never prompt; they apply a gated definition
- * only when a matching stored approval already exists. Everything else refuses.
+ * Headless sessions (no dialog UI) never prompt; they run a gated agent only
+ * when a matching stored approval already exists. Everything else is refused.
  */
 
 import { type AgentsConfig, APPROVAL_MAX_AGE_MS, type ApprovalEntry, type ApprovalLedger } from "./config.js";
 import { sanitizeUiText } from "./security.js";
-import type { PinnedAgent } from "./types.js";
+import type { AgentDiagnostic, PinnedAgent, Refusal } from "./types.js";
 
 /** Outcome of the approval gate for one agent. */
 export type TrustDecision =
 	| { ok: true; alreadyApproved: boolean }
-	| { ok: false; refusal: string; needsApproval: boolean };
+	| { ok: false; refusal: Refusal; needsApproval: boolean };
 
 /** A gated agent presented to the operator for approval. */
 export interface ApprovalRequest {
@@ -63,10 +63,11 @@ export function approvalMatches(entry: ApprovalEntry | undefined, hash: string):
 }
 
 /** One-line statement of what a gated definition would change in the main session. */
-function mainPromptConsequence(agent: PinnedAgent): string {
+function mainPromptConsequence(agent: PinnedAgent): string | undefined {
+	if (agent.definition.subAgentOnly) return undefined;
 	const name = sanitizeUiText(agent.definition.name, 64);
-	const verb = agent.definition.systemPrompt === "replace" ? "replace" : "extend";
-	return `"${name}" [${agent.definition.systemPrompt}] can ${verb} the main system prompt and change tools, model and thinking for this session.`;
+	const mode = agent.definition.systemPrompt;
+	return `"${name}" [${mode}] can ${mode === "replace" ? "replace" : "extend"} the main system prompt and change tools, model and thinking for this session.`;
 }
 
 /** Build the request shown to the operator, or used in a headless refusal. */
@@ -78,13 +79,15 @@ export function approvalRequest(agent: PinnedAgent): ApprovalRequest {
 	const tools = agent.definition.tools ? sanitizeUiText(agent.definition.tools.join(", "), 200) : "(inherit rules)";
 	const lines = [
 		`Agent: ${name}`,
-		`System prompt: ${agent.definition.systemPrompt}`,
+		`System prompt: ${agent.definition.systemPrompt}${agent.definition.mainAgentOnly ? " (main-session only)" : ""}${agent.definition.subAgentOnly ? " (sub-agent only)" : ""}`,
 		`Description: ${description}`,
 		`Source: ${agent.source.kind} — ${sanitizeUiText(agent.source.path, 200)}`,
 		`Hash: ${agent.hash.slice(0, 12)}`,
 		`Tools: ${tools}`,
+		`Isolation: ${agent.definition.isolation}${agent.definition.sandbox === "os" ? " (sandboxed bash)" : ""}`,
 	];
-	lines.push(mainPromptConsequence(agent));
+	const consequence = mainPromptConsequence(agent);
+	if (consequence !== undefined) lines.push(consequence);
 	return {
 		agent,
 		directory,
@@ -94,12 +97,12 @@ export function approvalRequest(agent: PinnedAgent): ApprovalRequest {
 }
 
 /**
- * Decide whether a gated agent may apply.
+ * Decide whether a gated agent may run.
  *
  * - A matching stored approval always passes.
  * - Otherwise, an interactive session may prompt (returned as `needsApproval`);
  *   the caller shows the confirm and records the result.
- * - A headless session refuses with an `unapproved-project-agent` message.
+ * - A headless session refuses with `unapproved-project-agent`.
  */
 export function checkTrust(agent: PinnedAgent, ctx: TrustContext): TrustDecision {
 	if (agent.source.trusted) return { ok: true, alreadyApproved: true };
@@ -108,12 +111,16 @@ export function checkTrust(agent: PinnedAgent, ctx: TrustContext): TrustDecision
 	const entry = storedApproval(ctx.approvals, request.directory, request.fileName, ctx.now());
 	if (approvalMatches(entry, agent.hash)) return { ok: true, alreadyApproved: true };
 
-	if (ctx.hasUI) return { ok: false, refusal: "", needsApproval: true };
+	if (ctx.hasUI) return { ok: false, refusal: undefined as never, needsApproval: true };
 
 	return {
 		ok: false,
 		needsApproval: false,
-		refusal: `agent "${agent.definition.name}" is gated (${agent.source.kind}) and has no matching approval; run /mx-pi-agents approve in an interactive session first`,
+		refusal: {
+			reason: "unapproved-project-agent",
+			message: `agent "${agent.definition.name}" is gated (${agent.source.kind}) and has no matching approval; run /mx-pi-agents approve in an interactive session first`,
+			diagnostics: [],
+		},
 	};
 }
 
@@ -126,6 +133,40 @@ export function recordApproval(approvals: ApprovalLedger, agent: PinnedAgent, no
 		[request.fileName]: { hash: agent.hash, kind: agent.source.kind, approvedAt: now },
 	};
 	return next;
+}
+
+/** Remove stale or non-matching approvals. Pure; caller persists the result. */
+export function pruneApprovals(
+	approvals: ApprovalLedger,
+	agents: readonly PinnedAgent[],
+	now: number,
+): { approvals: ApprovalLedger; removed: number; diagnostics: AgentDiagnostic[] } {
+	const diagnostics: AgentDiagnostic[] = [];
+	const live = new Map<string, Set<string>>();
+	for (const agent of agents) {
+		const request = approvalRequest(agent);
+		const files = live.get(request.directory) ?? new Set<string>();
+		files.add(request.fileName);
+		live.set(request.directory, files);
+	}
+
+	let removed = 0;
+	const next: ApprovalLedger = {};
+	for (const [directory, files] of Object.entries(approvals)) {
+		const kept: Record<string, ApprovalEntry> = {};
+		for (const [file, entry] of Object.entries(files)) {
+			const stillLive = live.get(directory)?.has(file) ?? false;
+			const expired = entry.approvedAt > 0 && now - entry.approvedAt > APPROVAL_MAX_AGE_MS;
+			if (!stillLive || expired) {
+				removed += 1;
+				continue;
+			}
+			kept[file] = entry;
+		}
+		if (Object.keys(kept).length > 0) next[directory] = kept;
+	}
+	if (removed > 0) diagnostics.push({ level: "info", message: `pruned ${removed} stale approval(s)` });
+	return { approvals: next, removed, diagnostics };
 }
 
 /** Gated agents in a roster, in discovery order. */

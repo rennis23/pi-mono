@@ -22,11 +22,13 @@ export interface CompletionSource {
 	description: string;
 	source: string;
 	trusted: boolean;
-	mode: SystemPromptMode;
+	/** Prompt mode for a main-session switch; `sub` marks a sub-agent-only definition. */
+	kind: SystemPromptMode | "sub";
 }
 
 /** Where in a directive the cursor sits, and the text the popup filters on. */
 export interface DirectiveContext {
+	mode: "single" | "pipeline";
 	prefix: string;
 }
 
@@ -39,7 +41,7 @@ export function toCompletionSource(agents: readonly PinnedAgent[]): CompletionSo
 		description: agent.definition.description,
 		source: agent.source.kind,
 		trusted: agent.source.trusted,
-		mode: agent.definition.systemPrompt,
+		kind: agent.definition.subAgentOnly ? "sub" : agent.definition.systemPrompt,
 	}));
 }
 
@@ -47,29 +49,41 @@ export function toCompletionSource(agents: readonly PinnedAgent[]): CompletionSo
  * Determine whether the cursor is in a completable directive position.
  *
  * Returns `undefined` outside a directive (mid-line `#`, an `@` line, a plain
- * prompt), once the trailing task has begun, or once a bracketed pipeline is
- * typed (pipelines were removed).
+ * prompt), once the trailing task has begun, or once `]` has closed the
+ * pipeline.
  */
 export function directiveContext(textBeforeCursor: string): DirectiveContext | undefined {
 	const lead = textBeforeCursor.match(/^[ \t]*#/);
 	if (!lead) return undefined;
 	const afterHash = textBeforeCursor.slice(lead[0].length);
 
-	if (afterHash.startsWith("[")) return undefined;
+	if (afterHash.startsWith("[")) {
+		const body = afterHash.slice(1);
+		if (body.includes("]")) return undefined;
+		// The trailing partial name after the last `[`, `>`, `,` or whitespace.
+		const match = body.match(/(?:^|[[>,\s])([A-Za-z0-9_-]*)$/);
+		return { mode: "pipeline", prefix: match ? match[1] : "" };
+	}
+
 	if (!/^[A-Za-z0-9_-]*$/.test(afterHash)) return undefined;
-	return { prefix: `#${afterHash}` };
+	return { mode: "single", prefix: `#${afterHash}` };
 }
 
 /**
  * Filter the roster for a directive context: prefix matches first, then
  * substring matches, capped at 20. An empty result is returned as `[]` (never
  * a file-completion fallback), so an unknown name shows an empty popup.
+ */
+/**
+ * Filter the roster for a directive context: prefix matches first, then
+ * substring matches, capped at 20. An empty result is returned as `[]` (never
+ * a file-completion fallback), so an unknown name shows an empty popup.
  *
- * The built-in `pi.dev [base]` row (`none`) resets the main session to plain
- * pi.
+ * Single mode prepends the built-in `pi.dev [base]` row (`none`), which resets
+ * the main session to plain pi. It is never offered inside a pipeline.
  */
 export function completionItems(source: readonly CompletionSource[], context: DirectiveContext): CompletionItem[] {
-	const term = context.prefix.replace(/^#/, "").toLowerCase();
+	const term = (context.mode === "single" ? context.prefix.replace(/^#/, "") : context.prefix).toLowerCase();
 	const prefixMatches: CompletionSource[] = [];
 	const substringMatches: CompletionSource[] = [];
 
@@ -84,13 +98,13 @@ export function completionItems(source: readonly CompletionSource[], context: Di
 		const label = sanitizeUiText(agent.name, 64);
 		const description = sanitizeUiText(`${agent.description} · ${agent.source}${trust}`, 160);
 		return {
-			value: `#${agent.name}`,
-			label: `${label} [${agent.mode}]`,
+			value: context.mode === "single" ? `#${agent.name}` : agent.name,
+			label: `${label} [${agent.kind}]`,
 			description,
 		};
 	});
 
-	if (term.length === 0 || "none".startsWith(term) || "pi.dev".startsWith(term)) {
+	if (context.mode === "single" && (term.length === 0 || "none".startsWith(term) || "pi.dev".startsWith(term))) {
 		rows.unshift({ value: "#none", label: "pi.dev [base]", description: "reset to plain pi" });
 	}
 

@@ -2,7 +2,8 @@
  * Durable extension config: `<agentDir>/extensions/mx-pi-agents.json`.
  *
  * The file is the source of truth at session start. It stores extra agent
- * search paths and the approval ledger for gated definitions. Writes are atomic
+ * search paths, the approval ledger for gated definitions, and the config
+ * ceilings that bound what an agent may declare. Writes are atomic
  * (temp + rename) so a crash mid-write cannot leave a half-parsed file that
  * would silently drop approvals.
  */
@@ -10,7 +11,8 @@
 import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { AgentDiagnostic } from "./types.js";
+import { isPathContained } from "./security.js";
+import type { AgentDiagnostic, Budgets } from "./types.js";
 
 export const CONFIG_FILE_NAME = "mx-pi-agents.json";
 export const CONFIG_VERSION = 1;
@@ -33,8 +35,17 @@ export interface AgentsConfig {
 	version: number;
 	/** Extra directories to search for definitions (gated). */
 	agentPaths: string[];
+	/**
+	 * Scope ceiling: the maximum directory roots any run may reach. Absent means
+	 * `[cwd]`. An agent's `scope` may tighten this list, never loosen it, and
+	 * only an explicit `/` licenses an unconfineable run. Resolved against the
+	 * config directory exactly like `agentPaths`.
+	 */
+	scope?: string[];
 	/** Approval ledger: real dir → file name → approved hash. */
 	approvals: ApprovalLedger;
+	/** Config ceilings. An agent may tighten these, never loosen them. */
+	limits: Partial<Budgets>;
 }
 
 export interface ConfigStore {
@@ -47,11 +58,17 @@ export interface ConfigStore {
 }
 
 export function defaultConfig(): AgentsConfig {
-	return { version: CONFIG_VERSION, agentPaths: [], approvals: {} };
+	return { version: CONFIG_VERSION, agentPaths: [], approvals: {}, limits: {} };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A positive finite number, or undefined. */
+function readLimit(value: unknown): number | undefined {
+	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+	return value;
 }
 
 /**
@@ -73,7 +90,9 @@ export function parseConfig(raw: unknown, diagnostics: AgentDiagnostic[]): Agent
 	}
 
 	config.agentPaths = parseAgentPaths(raw.agentPaths, diagnostics);
+	config.scope = parseScope(raw.scope, diagnostics);
 	config.approvals = parseApprovals(raw.approvals, diagnostics);
+	config.limits = parseLimits(raw.limits, diagnostics);
 	return config;
 }
 
@@ -87,6 +106,23 @@ function parseAgentPaths(raw: unknown, diagnostics: AgentDiagnostic[]): string[]
 	for (const entry of raw) {
 		if (typeof entry !== "string" || entry.trim().length === 0) {
 			diagnostics.push({ level: "warning", message: "config agentPaths contains a non-string entry; ignored" });
+			continue;
+		}
+		paths.push(entry.trim());
+	}
+	return paths;
+}
+
+function parseScope(raw: unknown, diagnostics: AgentDiagnostic[]): string[] | undefined {
+	if (raw === undefined) return undefined;
+	if (!Array.isArray(raw)) {
+		diagnostics.push({ level: "warning", message: "config scope is not a list; ignored" });
+		return undefined;
+	}
+	const paths: string[] = [];
+	for (const entry of raw) {
+		if (typeof entry !== "string" || entry.trim().length === 0) {
+			diagnostics.push({ level: "warning", message: "config scope contains a non-string entry; ignored" });
 			continue;
 		}
 		paths.push(entry.trim());
@@ -123,6 +159,29 @@ function parseApprovals(raw: unknown, diagnostics: AgentDiagnostic[]): ApprovalL
 	return approvals;
 }
 
+const KNOWN_LIMIT_KEYS = ["maxTurns", "timeoutMs", "tokenBudget", "costBudget"] as const;
+
+function parseLimits(raw: unknown, diagnostics: AgentDiagnostic[]): Partial<Budgets> {
+	if (raw === undefined) return {};
+	if (!isPlainObject(raw)) {
+		diagnostics.push({ level: "warning", message: "config limits is not an object; ignored" });
+		return {};
+	}
+	const limits: Partial<Budgets> = {};
+	for (const key of KNOWN_LIMIT_KEYS) {
+		const value = readLimit(raw[key]);
+		if (value === undefined) continue;
+		// Cost is fractional by nature; the others are integer counts.
+		limits[key] = key === "costBudget" ? value : Math.floor(value);
+	}
+	for (const key of Object.keys(raw)) {
+		if (!(KNOWN_LIMIT_KEYS as readonly string[]).includes(key)) {
+			diagnostics.push({ level: "info", message: `config limits.${key} is not a known limit; ignored` });
+		}
+	}
+	return limits;
+}
+
 /** Serialize a config deterministically (stable key order, trailing newline). */
 export function serializeConfig(config: AgentsConfig): string {
 	const approvals: ApprovalLedger = {};
@@ -133,11 +192,18 @@ export function serializeConfig(config: AgentsConfig): string {
 		for (const file of Object.keys(files).sort(byName)) sorted[file] = files[file];
 		approvals[dir] = sorted;
 	}
+	const limits: Partial<Budgets> = {};
+	if (config.limits.maxTurns !== undefined) limits.maxTurns = config.limits.maxTurns;
+	if (config.limits.timeoutMs !== undefined) limits.timeoutMs = config.limits.timeoutMs;
+	if (config.limits.tokenBudget !== undefined) limits.tokenBudget = config.limits.tokenBudget;
+	if (config.limits.costBudget !== undefined) limits.costBudget = config.limits.costBudget;
 	return `${JSON.stringify(
 		{
 			version: CONFIG_VERSION,
 			agentPaths: config.agentPaths,
+			...(config.scope !== undefined ? { scope: config.scope } : {}),
 			approvals,
+			limits,
 		},
 		null,
 		"\t",
@@ -179,6 +245,7 @@ export function createConfigStore(agentDir?: string): ConfigStore {
 				const config = parseConfig(raw, diagnostics);
 				const baseDir = dirname(path);
 				config.agentPaths = config.agentPaths.map((entry) => resolveAgentPath(entry, baseDir));
+				config.scope = config.scope?.map((entry) => resolveAgentPath(entry, baseDir));
 				return { config, diagnostics };
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return { config: defaultConfig(), diagnostics };
@@ -210,4 +277,12 @@ export function createConfigStore(agentDir?: string): ConfigStore {
 			}
 		},
 	};
+}
+
+/**
+ * True when `path` lives outside every protected root. Used to keep our own
+ * audit/temp artifacts from being written back into a target repository.
+ */
+export function isOutsideRoots(path: string, roots: readonly string[]): boolean {
+	return roots.every((root) => !isPathContained(root, path));
 }

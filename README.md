@@ -7,7 +7,7 @@ npm workspaces monorepo for [pi.dev](https://pi.dev) extensions.
 ```
 pi-mono/
 ├── packages/          # Workspace packages
-│   ├── mx-pi-agents/        # Main-session persona switching
+│   ├── mx-pi-agents/        # Secure agent registry and subagent runner
 │   ├── mx-pi-context-stats/ # Context/token/cost stats widget
 │   └── mx-pi-settings/      # Central settings hub + SDK for mx-pi extensions
 ├── scripts/           # Release, security, and mutation helpers
@@ -49,6 +49,24 @@ npm run release:patch
 npm run release:minor
 npm run release:major
 ```
+
+## Mutation testing
+
+Stryker mutation testing is configured at the repo root (`stryker.config.json`)
+and covers `packages/` (`sandbox/` is excluded).
+
+```bash
+npm run mutation             # full run (slow)
+npm run mutation:changed     # only files changed vs HEAD (fast local feedback)
+npm run mutation:changed -- master
+npm run mutation:changed -- HEAD --list   # print the mutate list, run nothing
+npm run mutation:survivors   # survived / uncovered mutants from the last report
+```
+
+`mutation:changed` diffs against `HEAD` by default (staged, unstaged and
+untracked files) and takes any git ref as its first argument. When no mutable
+source file changed it exits 0 without invoking Stryker. Unknown flags are
+passed through to `stryker run`, e.g. `npm run mutation:changed -- --ignoreStatic`.
 
 ## Quality and security guardians
 

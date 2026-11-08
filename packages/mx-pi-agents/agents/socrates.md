@@ -2,6 +2,7 @@
 name: socrates
 description: Socratic questioning persona that interrogates a problem with a chosen number of questions instead of proposing answers
 system_prompt: replace
+main_agent_only: true
 tools: []
 skills: []
 context_files: []

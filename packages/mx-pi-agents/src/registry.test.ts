@@ -124,14 +124,20 @@ describe("discoverAgents", () => {
 		expect(diagnostics.some((d) => d.level === "warning" && d.message.includes("dropped definition"))).toBe(true);
 	});
 
-	it("keeps a definition whose file stem matches its name", () => {
+	it("keeps a sub-only agent with delegate set and warns that it is ignored", () => {
 		writeFileSync(
 			join(agentDir, "agents", "s.md"),
-			"---\nname: s\ndescription: s description\nsystem_prompt: replace\n---\n\nbody\n",
+			"---\nname: s\ndescription: s description\nsub_agent_only: true\ndelegate: true\n---\n\nbody\n",
 		);
 		const { agents, diagnostics } = discoverAgents(dirs(), () => 1);
-		expect(findAgent(agents, "s")?.definition.systemPrompt).toBe("replace");
-		expect(diagnostics).toEqual([]);
+		expect(findAgent(agents, "s")?.definition.delegate).toBe(true);
+		expect(
+			diagnostics.some(
+				(d) =>
+					d.level === "warning" &&
+					d.message === 'delegate is ignored on subagent "s": sub agents never run in the main session',
+			),
+		).toBe(true);
 	});
 
 	it("ignores non-markdown files and dotfiles", () => {
@@ -242,12 +248,12 @@ describe("verifyPinned", () => {
 		expect(result.reason).toBe("missing");
 	});
 
-	it("detects a preset widening even when the body is unchanged", () => {
-		const path = writeDefinition(join(agentDir, "agents"), "alpha.md", "alpha", "thinking: low\n");
+	it("detects a capability widening even when the body is unchanged", () => {
+		const path = writeDefinition(join(agentDir, "agents"), "alpha.md", "alpha", "max_turns: 5\n");
 		const { snapshot } = pinRegistry(dirs(), () => 1);
 		writeFileSync(
 			path,
-			"---\nname: alpha\ndescription: alpha description\ntools: [read, bash, write]\nthinking: low\n---\n\nBody for alpha.\n",
+			"---\nname: alpha\ndescription: alpha description\ntools: [read, bash, write]\nmax_turns: 5\n---\n\nBody for alpha.\n",
 		);
 
 		expect(verifyPinned(snapshot.agents[0]).ok).toBe(false);
