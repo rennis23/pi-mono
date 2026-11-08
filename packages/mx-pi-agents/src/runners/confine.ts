@@ -23,6 +23,7 @@ import {
 	createWriteToolDefinition,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { candidatePaths, isUnsupportedTilde, normalizeToolPath } from "../paths.js";
 import { assertPathInScope, PATH_PARAM, ScopeRefusalError } from "../scope.js";
 import type { RunPlan } from "../types.js";
 
@@ -46,8 +47,11 @@ export function isConfinedToolName(name: string): boolean {
 /**
  * Wrap one tool definition so its path argument is contained in `roots`.
  *
- * The path field is resolved against `cwd` when absent or empty, so "no path"
- * means the run's own directory — never "unbounded". A non-string or
+ * The path field is normalized the way pi normalizes it (`~` expansion, leading
+ * `@`, Unicode spaces) and then resolved against `cwd` when absent or empty, so
+ * "no path" means the run's own directory — never "unbounded". Every macOS name
+ * variant the resolved path could open as is checked, so a normalized form cannot
+ * escape through a filesystem alias. A non-string or
  * unrecognizable parameter shape throws a `ScopeRefusalError`, which fails the
  * tool call closed.
  */
@@ -70,8 +74,16 @@ export function confineToolDefinition(
 			if (raw !== undefined && raw !== null && typeof raw !== "string") {
 				throw new ScopeRefusalError(`${definition.name}: ${spec.field} must be a string`);
 			}
-			const candidate = typeof raw === "string" && raw.trim().length > 0 ? raw : options.cwd;
-			assertPathInScope(options.roots, candidate, `${definition.name}.${spec.field}`);
+			const rawPath = typeof raw === "string" && raw.trim().length > 0 ? raw : options.cwd;
+			if (isUnsupportedTilde(rawPath)) {
+				throw new ScopeRefusalError(`${definition.name}.${spec.field}: ~user paths are not supported: ${rawPath}`);
+			}
+			// Check the form pi actually opens, not the raw argument: pi expands `~`
+			// and strips `@` before resolving, so a raw check can be bypassed.
+			const normalized = normalizeToolPath(rawPath);
+			for (const candidate of candidatePaths(normalized, options.cwd)) {
+				assertPathInScope(options.roots, candidate, `${definition.name}.${spec.field}`);
+			}
 			return definition.execute(toolCallId, params, signal, onUpdate, ctx);
 		},
 	};

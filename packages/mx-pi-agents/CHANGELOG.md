@@ -143,6 +143,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SECURITY.md` with the threat model, an enforced/not-enforced table, the
   decisions log and residual risk.
 
+### Fixed
+
+- Confined file tools now check the path in the form pi actually opens it, not the
+  raw argument: `~` expansion, a leading `@` and Unicode spaces are normalized
+  first, and every macOS name variant of the resolved path is checked. A `~user`
+  path is refused rather than guessed. Previously `~/.ssh/id_rsa` passed the scope
+  check while reading the real home file.
+
 ### Security
 
 - Child telemetry broadcasts the child's raw extension events — including

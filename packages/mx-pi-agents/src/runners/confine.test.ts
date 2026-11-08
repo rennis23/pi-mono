@@ -72,6 +72,33 @@ describe("confineToolDefinition", () => {
 		}
 	});
 
+	it("refuses a `~` path that pi expands outside the scope", async () => {
+		const base = fakeDefinition("read");
+		const wrapped = confineToolDefinition(base, { cwd: inside, roots: [inside], mode: "read" });
+		await expect(wrapped.execute("c", { path: "~/secret" }, undefined, undefined, ctx)).rejects.toBeInstanceOf(
+			ScopeRefusalError,
+		);
+		expect(base.execute).not.toHaveBeenCalled();
+	});
+
+	it("refuses a `~user` path rather than guessing the home directory", async () => {
+		const base = fakeDefinition("read");
+		const wrapped = confineToolDefinition(base, { cwd: inside, roots: [inside], mode: "read" });
+		await expect(wrapped.execute("c", { path: "~bob/secret" }, undefined, undefined, ctx)).rejects.toThrow(
+			/~user paths are not supported/,
+		);
+		expect(base.execute).not.toHaveBeenCalled();
+	});
+
+	it("refuses the home path behind a leading `@`", async () => {
+		const base = fakeDefinition("read");
+		const wrapped = confineToolDefinition(base, { cwd: inside, roots: [inside], mode: "read" });
+		await expect(wrapped.execute("c", { path: "@~/secret" }, undefined, undefined, ctx)).rejects.toBeInstanceOf(
+			ScopeRefusalError,
+		);
+		expect(base.execute).not.toHaveBeenCalled();
+	});
+
 	it("refuses a `..` escape", async () => {
 		const base = fakeDefinition("read");
 		const wrapped = confineToolDefinition(base, { cwd: inside, roots: [inside], mode: "read" });
