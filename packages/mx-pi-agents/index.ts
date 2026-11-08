@@ -1104,7 +1104,7 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 		description: [
 			"Delegate a task to a named agent with an explicit capability grant.",
 			"A child can only touch paths inside the run scope (the cwd by default); an out-of-scope read, write or search is refused.",
-			"Modes: single ({agent, task}), parallel ({tasks: [...]}, max 8), chain ({chain: [...]}, {previous} substitution).",
+			"Modes: single ({agent, task}), parallel ({tasks: [...]}, max 8), chain ({chain: [...]}, max 8 steps), pipeline ({stages: [...]}, max 8 stages). Chain and pipeline use {previous} substitution.",
 			"Agents come from the pinned registry; project agents require approval.",
 		].join(" "),
 		parameters: DEFAULT_PARAMS,

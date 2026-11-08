@@ -226,6 +226,12 @@ export async function runChain(
 	deps: OrchestratorDeps,
 	options: RunOptions,
 ): Promise<DelegationOutcome> {
+	const chainError = taskCountError(steps.length);
+	if (chainError !== undefined) {
+		const refusal: Refusal = { reason: "invalid-request", message: chainError, diagnostics: [] };
+		return { mode: "chain", results: [], stoppedAt: undefined, diagnostics: [], refusal };
+	}
+
 	const diagnostics: AgentDiagnostic[] = [];
 	const results: RunResult[] = [];
 	let previous = "";

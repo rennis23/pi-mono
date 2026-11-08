@@ -14,8 +14,8 @@
  * registry, a session or a model.
  */
 
-/** Hard cap on how many stages one directive may declare. */
-export const MAX_PIPELINE_STAGES = 16;
+/** Hard cap on how many stages one directive may declare (same as the task cap). */
+export const MAX_PIPELINE_STAGES = 8;
 
 /** One pipeline stage. More than one agent means a parallel group. */
 export interface DirectiveStage {

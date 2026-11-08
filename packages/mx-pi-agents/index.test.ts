@@ -1227,7 +1227,7 @@ describe("mutation-hardening: command and description strings", () => {
 		expect(desc).toContain("out-of-scope read, write or search is refused");
 		expect(desc).toContain("single ({agent, task})");
 		expect(desc).toContain("parallel ({tasks: [...]}, max 8)");
-		expect(desc).toContain("chain ({chain: [...]}, {previous} substitution)");
+		expect(desc).toContain("chain ({chain: [...]}, max 8 steps)");
 		expect(desc).toContain("project agents require approval");
 	});
 

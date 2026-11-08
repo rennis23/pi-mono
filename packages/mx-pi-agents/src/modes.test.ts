@@ -259,6 +259,29 @@ describe("runChain", () => {
 		expect(stub.plans).toHaveLength(1);
 	});
 
+	it("refuses more than the step cap before planning any child", async () => {
+		const run = vi.fn();
+		const steps = Array.from({ length: 9 }, (_, i) => ({ agent: "explorer", task: `t${i}` }));
+		const outcome = await runChain(steps, deps({ selectRunner: () => ({ kind: "process", run }) }), options);
+
+		expect(outcome.refusal?.reason).toBe("invalid-request");
+		expect(outcome.results).toEqual([]);
+		expect(outcome.stoppedAt).toBeUndefined();
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it("runs exactly the maximum number of steps", async () => {
+		const stub = stubRunner((plan) => result(plan.agentName, "ok"));
+		const outcome = await runChain(
+			Array.from({ length: 8 }, (_, i) => ({ agent: "explorer", task: `t${i}` })),
+			deps({ selectRunner: () => stub.runner }),
+			options,
+		);
+
+		expect(outcome.refusal).toBeUndefined();
+		expect(outcome.results).toHaveLength(8);
+	});
+
 	it("stops on a refusal and keeps earlier results", async () => {
 		const stub = stubRunner((plan) => result(plan.agentName, "ok"));
 		const outcome = await runChain(
@@ -646,7 +669,7 @@ describe("modes: boundary hardening", () => {
 			deps(),
 			options,
 		);
-		expect(tooMany.refusal?.message).toContain("1..16");
+		expect(tooMany.refusal?.message).toContain("1..8");
 	});
 
 	it("runPipeline cascades {previous} through single-agent stages", async () => {
@@ -728,10 +751,24 @@ describe("modes: survivor kills", () => {
 	});
 
 	it("accepts exactly the maximum number of pipeline stages", async () => {
-		const stages = Array.from({ length: 16 }, () => ({ agents: ["explorer"] }));
+		const stages = Array.from({ length: 8 }, () => ({ agents: ["explorer"] }));
 		const outcome = await runPipeline(stages, "go", deps(), options);
 		expect(outcome.refusal).toBeUndefined();
-		expect(outcome.results).toHaveLength(16);
+		expect(outcome.results).toHaveLength(8);
+	});
+
+	it("refuses a pipeline longer than the step cap before running anything", async () => {
+		const run = vi.fn();
+		const outcome = await runPipeline(
+			Array.from({ length: 9 }, () => ({ agents: ["explorer"] })),
+			"go",
+			deps({ selectRunner: () => ({ kind: "process", run }) }),
+			options,
+		);
+
+		expect(outcome.refusal?.reason).toBe("invalid-request");
+		expect(outcome.results).toEqual([]);
+		expect(run).not.toHaveBeenCalled();
 	});
 
 	it("refuses a stage above the task cap with a stage-specific message", async () => {

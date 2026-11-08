@@ -58,8 +58,9 @@ The model calls `mx_pi_agent` in one of three modes:
 ]}
 ```
 
-A chain stops at the first failed step and reports where it stopped. A parallel
-call settles every task and reports per-task status. While a call runs, the
+A chain stops at the first failed step and reports where it stopped, and a chain is
+capped at 8 steps. A parallel call settles every task and reports per-task status.
+While a call runs, the
 [live progress widget](#live-progress) shows each agent's state; Escape cancels.
 
 ## Direct invocation
@@ -97,8 +98,9 @@ be a definition name.
 
 Stages flow with cascade `{previous}`: stage 1 receives `<prompt>` and every
 later stage receives the previous stage's combined output (for a parallel stage,
-the successful results joined under `--- <agent> ---` headers). Up to 16 stages
-are allowed, and a parallel group is capped at 8 agents.
+the successful results joined under `--- <agent> ---` headers). Up to 8 stages
+are allowed, matching the 8-step cap on chain and the 8-task cap on parallel, and a
+parallel group is capped at 8 agents.
 
 Typing `#` at the start of an empty input opens autocomplete listing every
 pinned agent with its mode badge, description and source, plus a built-in

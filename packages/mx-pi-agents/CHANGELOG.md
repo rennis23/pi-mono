@@ -157,6 +157,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A sandboxed run writes only to a private temp directory created for it and removed
   after the run; the shared `/tmp` / `$TMPDIR` is no longer a write root in the
   seatbelt profile or the `bwrap` argv.
+- `chain` mode is capped at 8 steps like the other modes: a longer chain is refused
+  as an `invalid-request` before any child is planned. Pipeline stages are capped at
+  8 as well (`MAX_PIPELINE_STAGES` was 16), so the tool description, the directive
+  parser and `runPipeline` now agree.
 
 ### Security
 
