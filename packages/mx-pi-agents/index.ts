@@ -1227,7 +1227,9 @@ export default function mxPiAgents(pi: ExtensionAPI) {
 				case "status": {
 					const sandbox = isSandboxAvailable() ? "available" : "unavailable";
 					const scope = config.scope !== undefined && config.scope.length > 0 ? config.scope.join(", ") : "(cwd)";
-					const unconfined = config.scope?.some((root) => root === "/") ? "allowed" : "refused";
+					let unconfined = "refused";
+					if (config.scope?.some((root) => root === "/")) unconfined = "allowed";
+					else if (config.scope === undefined || config.scope.length === 0) unconfined = "refused (default)";
 					const lines = [
 						`config: ${configStore.path}`,
 						`agents: ${roster.length} (${gatedAgents(roster).length} gated)`,

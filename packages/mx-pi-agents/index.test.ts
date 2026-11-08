@@ -368,7 +368,7 @@ describe("/mx-pi-agents command", () => {
 		expect(text).toContain("config:");
 		expect(text).toContain("agents:");
 		expect(text).toContain("scope:");
-		expect(text).toContain("unconfined runs: refused");
+		expect(text).toContain("unconfined runs: refused (default)");
 		expect(text).toContain("sandbox: os");
 	});
 
@@ -384,6 +384,20 @@ describe("/mx-pi-agents command", () => {
 		const text = harness.notificationText();
 		expect(text).toContain("scope: /");
 		expect(text).toContain("unconfined runs: allowed");
+	});
+
+	it("status marks a configured non-root ceiling as refused without the default note", async () => {
+		const extensions = join(agentDir, "extensions");
+		mkdirSync(extensions, { recursive: true });
+		writeFileSync(
+			join(extensions, "mx-pi-agents.json"),
+			`${JSON.stringify({ version: 1, agentPaths: [], approvals: {}, limits: {}, scope: ["/work"] }, null, "\t")}\n`,
+		);
+		await start();
+		await harness.runCommand("status");
+		const text = harness.notificationText();
+		expect(text).toContain("unconfined runs: refused");
+		expect(text).not.toContain("unconfined runs: refused (default)");
 	});
 
 	it("refresh re-pins the roster", async () => {

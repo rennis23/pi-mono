@@ -161,6 +161,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as an `invalid-request` before any child is planned. Pipeline stages are capped at
   8 as well (`MAX_PIPELINE_STAGES` was 16), so the tool description, the directive
   parser and `runPipeline` now agree.
+- `/mx-pi-agents status` distinguishes the default refusal from a configured one:
+  `unconfined runs: refused (default)` when no scope ceiling is set.
 - `unavailable()` and `unavailableRunner` are no longer exported from `index.ts`; the
   failure-shape helper now lives in the test harness, keeping the entrypoint free of
   test-only exports.
