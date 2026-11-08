@@ -30,7 +30,3 @@ coverage/
 reports/
 packages/*/dist/
 sandbox/images/pi-agent.tar
-
-# Stryker mutation testing
-.stryker-tmp/
-reports/
