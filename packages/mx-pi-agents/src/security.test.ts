@@ -46,6 +46,10 @@ import {
 	stripControlChars,
 } from "./security.js";
 import { checkTrust } from "./trust.js";
+
+/** The per-run private temp directory a sandboxed shell writes to. */
+const RUN_TMP = "/run/tmp";
+
 import { type RunPlan, zeroUsage } from "./types.js";
 
 let root: string;
@@ -599,11 +603,11 @@ describe("invariant 11: a run cannot touch a path outside its granted scope", ()
 
 	it("narrows the sandbox profile and argv", () => {
 		const scope = realpathSync(targetRepo);
-		const profile = buildSeatbeltProfile([scope], [scope]);
+		const profile = buildSeatbeltProfile([scope], [scope], RUN_TMP);
 		expect(profile).not.toMatch(/\(allow file-read\*\)/);
 		expect(profile).toContain(`(allow file-read* (subpath "${scope}"))`);
 
-		const argv = buildBwrapArgv("ls", [scope], [scope], scope).join(" ");
+		const argv = buildBwrapArgv("ls", [scope], [scope], scope, RUN_TMP).join(" ");
 		expect(argv).not.toContain("--ro-bind / /");
 		expect(argv).toContain(`--ro-bind ${scope} ${scope}`);
 		expect(argv).toContain("--unshare-all");

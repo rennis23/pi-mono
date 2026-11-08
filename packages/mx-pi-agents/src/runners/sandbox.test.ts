@@ -11,10 +11,12 @@ import {
 	buildSeatbeltProfile,
 	createSandboxedBashOperations,
 	detectBackend,
+	ENV_ALLOW,
 	isSandboxAvailable,
 	packageManagerReadRoots,
 	SEATBELT_PROFILE_NAME,
 	SEATBELT_SYSTEM_READ_ROOTS,
+	sandboxEnv,
 	sandboxTempRoots,
 	sandboxUnavailableReason,
 	shellQuote,
@@ -24,9 +26,12 @@ import {
 } from "./sandbox.js";
 import { writeSystemPromptFile } from "./subprocess.js";
 
+/** The per-run private temp directory a sandboxed shell writes to. */
+const RUN_TMP = "/run/tmp";
+
 describe("buildSeatbeltProfile", () => {
 	it("denies by default and allows writes only under the roots", () => {
-		const profile = buildSeatbeltProfile(["/work/repo"], ["/work/repo"]);
+		const profile = buildSeatbeltProfile(["/work/repo"], ["/work/repo"], RUN_TMP);
 		expect(profile).toContain("(deny default)");
 		expect(profile).toContain("(deny file-write*)");
 		expect(profile).toContain('(allow file-write* (subpath "/work/repo"))');
@@ -34,17 +39,17 @@ describe("buildSeatbeltProfile", () => {
 	});
 
 	it("denies network", () => {
-		expect(buildSeatbeltProfile(["/work"], ["/work"]).includes("(deny network*)")).toBe(true);
+		expect(buildSeatbeltProfile(["/work"], ["/work"], RUN_TMP).includes("(deny network*)")).toBe(true);
 	});
 
 	it("imports the system runtime profile and never allows a bare host-wide read", () => {
-		const profile = buildSeatbeltProfile(["/work"], ["/work"]);
+		const profile = buildSeatbeltProfile(["/work"], ["/work"], RUN_TMP);
 		expect(profile).toContain('(import "system.sb")');
 		expect(profile).not.toMatch(/\(allow file-read\*\)/);
 	});
 
 	it("emits one read clause per system allowlist root and per scope root", () => {
-		const profile = buildSeatbeltProfile(["/work"], ["/work", "/other"]);
+		const profile = buildSeatbeltProfile(["/work"], ["/work", "/other"], RUN_TMP);
 		for (const root of SEATBELT_SYSTEM_READ_ROOTS) {
 			expect(profile).toContain(`(allow file-read* (subpath "${root}"))`);
 		}
@@ -53,19 +58,19 @@ describe("buildSeatbeltProfile", () => {
 	});
 
 	it("emits one write clause per root", () => {
-		const profile = buildSeatbeltProfile(["/a", "/b"], ["/a", "/b"]);
+		const profile = buildSeatbeltProfile(["/a", "/b"], ["/a", "/b"], RUN_TMP);
 		expect(profile).toContain('(allow file-write* (subpath "/a"))');
 		expect(profile).toContain('(allow file-write* (subpath "/b"))');
 	});
 
 	it("includes the toolchain allowance and never a bare host-wide read", () => {
-		const profile = buildSeatbeltProfile(["/w"], ["/r"]);
+		const profile = buildSeatbeltProfile(["/w"], ["/r"], RUN_TMP);
 		expect(profile).toContain(`(allow file-read* (subpath "${SEATBELT_SYSTEM_READ_ROOTS[0]}"))`);
 		expect(profile).not.toMatch(/\(allow file-read\*\)/);
 	});
 
 	it("escapes quotes in paths", () => {
-		const profile = buildSeatbeltProfile(['/we"ird'], ['/we"ird']);
+		const profile = buildSeatbeltProfile(['/we"ird'], ['/we"ird'], RUN_TMP);
 		expect(profile).toContain('(subpath "/we\\"ird")');
 	});
 
@@ -85,36 +90,38 @@ describe("buildSeatbeltProfile", () => {
 			"(allow file-read-metadata)",
 			"(allow sysctl-read)",
 			"(allow mach-lookup)",
-			"; writes only under the run scope plus the system temp directory",
+			"; writes only under the run scope plus the run's private temp directory",
 			"(deny file-write*)",
 			'(allow file-write* (subpath "/w"))',
-			...sandboxTempRoots().map((root) => `(allow file-write* (subpath "${root}"))`),
+			'(allow file-write* (subpath "/run/tmp"))',
 			"; no network egress from a sandboxed child",
 			"(deny network*)",
 		].join("\n");
-		expect(buildSeatbeltProfile(["/w"], ["/r"])).toBe(expected);
+		expect(buildSeatbeltProfile(["/w"], ["/r"], RUN_TMP)).toBe(expected);
 	});
 
 	it("allows metadata reads so path resolution can stat ancestors", () => {
-		const profile = buildSeatbeltProfile(["/w"], ["/r"]);
+		const profile = buildSeatbeltProfile(["/w"], ["/r"], RUN_TMP);
 		expect(profile).toContain("(allow file-read-metadata)");
 		expect(profile).not.toContain("(allow file-read-metadata (subpath");
 	});
 
-	it("allows writes under the system temp directory", () => {
-		const profile = buildSeatbeltProfile(["/w"], ["/r"]);
+	it("grants writes only to the run scope and the run's private temp directory", () => {
+		const profile = buildSeatbeltProfile(["/w"], ["/r"], RUN_TMP);
+		expect(profile).toContain('(allow file-write* (subpath "/run/tmp"))');
+	});
+
+	it("never grants writes to the shared temp directory", () => {
+		const profile = buildSeatbeltProfile(["/w"], ["/r"], RUN_TMP);
 		for (const root of sandboxTempRoots()) {
-			expect(profile).toContain(`(allow file-write* (subpath "${root}"))`);
+			expect(profile).not.toContain(`(allow file-write* (subpath "${root}"))`);
 		}
 	});
 
-	it("still emits the temp write clause when no scope root is writable", () => {
-		const profile = buildSeatbeltProfile([], []);
+	it("still emits the private temp write clause when no scope root is writable", () => {
+		const profile = buildSeatbeltProfile([], [], RUN_TMP);
 		expect(profile).toContain("(deny file-write*)");
-		const roots = sandboxTempRoots();
-		if (roots.length > 0) {
-			expect(profile).toMatch(/\(allow file-write\* \(subpath /);
-		}
+		expect(profile).toContain(`(allow file-write* (subpath "${RUN_TMP}"))`);
 	});
 });
 
@@ -127,11 +134,19 @@ const canExecuteProfile = process.platform === "darwin" && existsSync(SEATBELT_E
  * golden test above passed while the shipped profile could not start `node` at all.
  */
 describe.skipIf(!canExecuteProfile)("buildSeatbeltProfile, executed", () => {
-	function runUnderProfile(command: string): { status: number | null; stdout: string; stderr: string } {
+	/** A private run temp dir, cleaned up by the caller. */
+	function runTempDir(): string {
+		return realpathSync(mkdtempSync(join(tmpdir(), "mx-pi-seatbelt-run-")));
+	}
+
+	function runUnderProfile(
+		command: string,
+		runTmp: string,
+	): { status: number | null; stdout: string; stderr: string } {
 		const dir = mkdtempSync(join(tmpdir(), "mx-pi-seatbelt-it-"));
 		try {
 			const profilePath = join(dir, "profile.sb");
-			writeFileSync(profilePath, buildSeatbeltProfile([process.cwd()], [process.cwd()]));
+			writeFileSync(profilePath, buildSeatbeltProfile([process.cwd()], [process.cwd()], runTmp));
 			const result = spawnSync(SEATBELT_EXEC, buildSeatbeltArgv(profilePath, command), {
 				encoding: "utf8",
 				timeout: 30_000,
@@ -143,39 +158,58 @@ describe.skipIf(!canExecuteProfile)("buildSeatbeltProfile, executed", () => {
 	}
 
 	it("runs a real node script: binary, dylibs, OpenSSL config and path resolution", () => {
-		const result = runUnderProfile(
-			`"${process.execPath}" -e 'process.stdout.write(require("node:fs").realpathSync("."))'`,
-		);
-		expect(result.status).toBe(0);
-		expect(result.stdout.length).toBeGreaterThan(0);
-	});
-
-	it("resolves an entry file through its ancestors", () => {
-		const dir = realpathSync(mkdtempSync(join(tmpdir(), "mx-pi-seatbelt-entry-")));
+		const runTmp = runTempDir();
 		try {
-			writeFileSync(join(dir, "entry.js"), 'console.log("entry-ok")');
-			const result = runUnderProfile(`"${process.execPath}" "${join(dir, "entry.js")}"`);
+			const result = runUnderProfile(
+				`"${process.execPath}" -e 'process.stdout.write(require("node:fs").realpathSync("."))'`,
+				runTmp,
+			);
 			expect(result.status).toBe(0);
-			expect(result.stdout.trim()).toBe("entry-ok");
+			expect(result.stdout.length).toBeGreaterThan(0);
 		} finally {
-			rmSync(dir, { recursive: true, force: true });
+			rmSync(runTmp, { recursive: true, force: true });
 		}
 	});
 
-	it("allows writes under the temp directory", () => {
-		const dir = realpathSync(mkdtempSync(join(tmpdir(), "mx-pi-seatbelt-write-")));
+	it("resolves an entry file through its ancestors", () => {
+		const runTmp = runTempDir();
 		try {
-			const result = runUnderProfile(`echo ok > "${join(dir, "yes.txt")}"`);
+			writeFileSync(join(runTmp, "entry.js"), 'console.log("entry-ok")');
+			const result = runUnderProfile(`"${process.execPath}" "${join(runTmp, "entry.js")}"`, runTmp);
 			expect(result.status).toBe(0);
-			expect(statSync(join(dir, "yes.txt")).size).toBeGreaterThan(0);
+			expect(result.stdout.trim()).toBe("entry-ok");
 		} finally {
-			rmSync(dir, { recursive: true, force: true });
+			rmSync(runTmp, { recursive: true, force: true });
+		}
+	});
+
+	it("allows writes under the run's private temp directory", () => {
+		const runTmp = runTempDir();
+		try {
+			const result = runUnderProfile(`echo ok > "${join(runTmp, "yes.txt")}"`, runTmp);
+			expect(result.status).toBe(0);
+			expect(statSync(join(runTmp, "yes.txt")).size).toBeGreaterThan(0);
+		} finally {
+			rmSync(runTmp, { recursive: true, force: true });
+		}
+	});
+
+	it("denies writes to the shared temp directory", () => {
+		const runTmp = runTempDir();
+		const shared = realpathSync(mkdtempSync(join(tmpdir(), "mx-pi-seatbelt-shared-")));
+		try {
+			const result = runUnderProfile(`echo no > "${join(shared, "no.txt")}"`, runTmp);
+			expect(result.status).not.toBe(0);
+			expect(existsSync(join(shared, "no.txt"))).toBe(false);
+		} finally {
+			rmSync(runTmp, { recursive: true, force: true });
+			rmSync(shared, { recursive: true, force: true });
 		}
 	});
 
 	it("denies writes to the home directory", () => {
 		const probe = join(homedir(), "mx-pi-agents-must-not-write.txt");
-		const result = runUnderProfile(`echo no > "${probe}"`);
+		const result = runUnderProfile(`echo no > "${probe}"`, runTempDir());
 		try {
 			expect(result.status).not.toBe(0);
 			expect(existsSync(probe)).toBe(false);
@@ -187,6 +221,7 @@ describe.skipIf(!canExecuteProfile)("buildSeatbeltProfile, executed", () => {
 	it("denies network egress", () => {
 		const result = runUnderProfile(
 			`"${process.execPath}" -e 'fetch("http://example.com").then(()=>process.exit(0),()=>process.exit(1))'`,
+			runTempDir(),
 		);
 		expect(result.status).not.toBe(0);
 	});
@@ -203,6 +238,45 @@ describe("sandboxTempRoots", () => {
 
 	it("returns no empty root", () => {
 		expect(sandboxTempRoots("")).not.toContain("");
+	});
+});
+
+describe("sandboxEnv", () => {
+	it("drops secrets and unrelated variables from the parent environment", () => {
+		const env = sandboxEnv(
+			{
+				PATH: "/bin",
+				ANTHROPIC_API_KEY: "sk-secret",
+				GITHUB_TOKEN: "gho_secret",
+				PI_SESSION_ID: "session-1",
+				FOO: "bar",
+			},
+			RUN_TMP,
+		);
+		expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+		expect(env.GITHUB_TOKEN).toBeUndefined();
+		expect(env.PI_SESSION_ID).toBeUndefined();
+		expect(env.FOO).toBeUndefined();
+	});
+
+	it("pins TMPDIR to the run temp dir", () => {
+		expect(sandboxEnv({ TMPDIR: "/shared/tmp" }, RUN_TMP).TMPDIR).toBe(RUN_TMP);
+	});
+
+	it("keeps the allowlist and every LC_ variable", () => {
+		const env = sandboxEnv({ PATH: "/bin", LANG: "C.UTF-8", LC_ALL: "en_US.UTF-8", HOME: "/home/u" }, RUN_TMP);
+		expect(env.LC_ALL).toBe("en_US.UTF-8");
+		expect(env.PATH).toBe("/bin");
+		expect(env.LANG).toBe("C.UTF-8");
+		expect(env.HOME).toBe("/home/u");
+	});
+
+	it("is total for an empty parent environment", () => {
+		expect(sandboxEnv({}, RUN_TMP)).toEqual({ TMPDIR: RUN_TMP });
+	});
+
+	it("pins the allowlist to what a shell needs to start", () => {
+		expect(ENV_ALLOW).toEqual(["PATH", "LANG", "TERM", "SHELL", "USER", "LOGNAME", "HOME", "npm_config_cache"]);
 	});
 });
 
@@ -233,7 +307,7 @@ describe("buildSeatbeltArgv", () => {
 
 describe("buildBwrapArgv", () => {
 	it("unshares all namespaces and binds the writable roots", () => {
-		const argv = buildBwrapArgv("ls", ["/work"], ["/work"], "/work");
+		const argv = buildBwrapArgv("ls", ["/work"], ["/work"], "/work", RUN_TMP);
 		expect(argv).toContain("--unshare-all");
 		expect(argv).toContain("--die-with-parent");
 		expect(argv).toContain("--ro-bind");
@@ -243,12 +317,12 @@ describe("buildBwrapArgv", () => {
 	});
 
 	it("never binds the filesystem root read-only", () => {
-		const argv = buildBwrapArgv("ls", ["/work"], ["/work"], "/work");
+		const argv = buildBwrapArgv("ls", ["/work"], ["/work"], "/work", RUN_TMP);
 		expect(argv.join(" ")).not.toContain("--ro-bind / /");
 	});
 
 	it("ro-binds the system allowlist and the scope read roots", () => {
-		const argv = buildBwrapArgv("ls", ["/work"], ["/work"], "/work");
+		const argv = buildBwrapArgv("ls", ["/work"], ["/work"], "/work", RUN_TMP);
 		for (const root of BWRAP_READ_ROOTS) {
 			expect(argv.join(" ")).toContain(`--ro-bind ${root} ${root}`);
 		}
@@ -256,13 +330,23 @@ describe("buildBwrapArgv", () => {
 	});
 
 	it("chdirs into the working directory and runs bash", () => {
-		const argv = buildBwrapArgv("ls", ["/work"], ["/work"], "/work");
+		const argv = buildBwrapArgv("ls", ["/work"], ["/work"], "/work", RUN_TMP);
 		const chdirIndex = argv.indexOf("--chdir");
 		expect(argv.slice(chdirIndex)).toEqual(["--chdir", "/work", "/bin/bash", "-c", "ls"]);
 	});
 
+	it("binds the run's private temp directory and never the shared one", () => {
+		const argv = buildBwrapArgv("ls", ["/work"], ["/work"], "/work", RUN_TMP);
+		const joined = argv.join(" ");
+		expect(joined).toContain(`--bind ${RUN_TMP} ${RUN_TMP}`);
+		for (const root of sandboxTempRoots()) {
+			expect(joined).not.toContain(`--bind ${root} ${root}`);
+			expect(joined).not.toContain(`--ro-bind ${root} ${root}`);
+		}
+	});
+
 	it("golden-matches a full argv", () => {
-		expect(buildBwrapArgv("ls", ["/w"], ["/r"], "/w")).toEqual([
+		expect(buildBwrapArgv("ls", ["/w"], ["/r"], "/w", RUN_TMP)).toEqual([
 			"--unshare-all",
 			"--die-with-parent",
 			...BWRAP_READ_ROOTS.flatMap((root) => ["--ro-bind", root, root]),
@@ -278,6 +362,9 @@ describe("buildBwrapArgv", () => {
 			"--bind",
 			"/w",
 			"/w",
+			"--bind",
+			"/run/tmp",
+			"/run/tmp",
 			"--chdir",
 			"/w",
 			"/bin/bash",
@@ -484,7 +571,7 @@ describe("createSandboxedBashOperations", () => {
 		);
 		const operations = createSandboxedBashOperations({ exec }, { writeRoots: [dir], platform: "linux" });
 		if (whichBinary("bwrap", process.env.PATH) === undefined) {
-			expect(() => operations.exec("true", dir!, { onData: () => {} })).toThrow(/bwrap/);
+			await expect(operations.exec("true", dir!, { onData: () => {} })).rejects.toThrow(/bwrap/);
 			return;
 		}
 		await operations.exec("true", dir, { onData: () => {} });
@@ -545,14 +632,14 @@ describe("sandbox: boundary hardening", () => {
 	});
 
 	it("buildSeatbeltProfile dedupes roots and denies by default", () => {
-		const profile = buildSeatbeltProfile(["/w", "/w", ""], ["/r", "/r"]);
+		const profile = buildSeatbeltProfile(["/w", "/w", ""], ["/r", "/r"], RUN_TMP);
 		expect(profile).toContain("(deny default)");
 		expect(profile.match(/file-write\* \(subpath "\/w"\)/g)).toHaveLength(1);
 		expect(profile).toContain("(deny network*)");
 	});
 
 	it("buildBwrapArgv binds roots and chdirs", () => {
-		const args = buildBwrapArgv("echo hi", ["/w"], ["/r"], "/cwd");
+		const args = buildBwrapArgv("echo hi", ["/w"], ["/r"], "/cwd", RUN_TMP);
 		expect(args).toContain("--unshare-all");
 		expect(args.filter((arg) => arg === "--ro-bind")).toHaveLength(BWRAP_READ_ROOTS.length + 1);
 		expect(args[args.indexOf("--chdir") + 1]).toBe("/cwd");
@@ -583,7 +670,7 @@ describe("sandbox: survivor kills", () => {
 	});
 
 	it("drops empty roots from the profile", () => {
-		const profile = buildSeatbeltProfile(["/w", ""], ["/r", ""]);
+		const profile = buildSeatbeltProfile(["/w", ""], ["/r", ""], RUN_TMP);
 		expect(profile).not.toContain('(subpath "")');
 	});
 
@@ -610,6 +697,48 @@ describe("sandbox: survivor kills", () => {
 		const operations = createSandboxedBashOperations({ exec }, { writeRoots: ["/w"], platform: "darwin" });
 		await operations.exec("true", "/cwd", { onData: () => {} });
 		expect(exec.mock.calls[0]?.[0] ?? "").toContain('(allow file-read* (subpath "/w"))');
+	});
+
+	it("passes the scrubbed environment with TMPDIR pinned to a private run temp dir", async () => {
+		const runDir = mkdtempSync(join(tmpdir(), "mx-pi-agents-sandbox-kill-"));
+		const exec = vi.fn<(command: string, cwd: string, options: unknown) => Promise<{ exitCode: number }>>(
+			async () => ({ exitCode: 0 }),
+		);
+		const operations = createSandboxedBashOperations(
+			{ exec },
+			{
+				writeRoots: [runDir],
+				platform: "darwin",
+				env: { PATH: "/bin", ANTHROPIC_API_KEY: "sk-secret", LC_ALL: "C" },
+			},
+		);
+		await operations.exec("true", runDir, { onData: () => {} });
+		const passed = exec.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv };
+		expect(passed.env?.ANTHROPIC_API_KEY).toBeUndefined();
+		expect(passed.env?.PATH).toBe("/bin");
+		expect(passed.env?.LC_ALL).toBe("C");
+		const runTmp = passed.env?.TMPDIR;
+		expect(runTmp).toBeDefined();
+		// The run temp dir exists for the duration of the run and is removed after it.
+		expect(runTmp).not.toBe(runDir);
+		expect(existsSync(runTmp as string)).toBe(false);
+		rmSync(runDir, { recursive: true, force: true });
+	});
+
+	it("grants writes only to the run scope and the private run temp dir", async () => {
+		const runDir = mkdtempSync(join(tmpdir(), "mx-pi-agents-sandbox-kill-"));
+		const exec = vi.fn<(command: string, cwd: string, options: unknown) => Promise<{ exitCode: number }>>(
+			async () => ({ exitCode: 0 }),
+		);
+		const operations = createSandboxedBashOperations({ exec }, { writeRoots: [runDir], platform: "darwin" });
+		await operations.exec("true", runDir, { onData: () => {} });
+		const command = exec.mock.calls[0]?.[0] ?? "";
+		const runTmp = (exec.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv })?.env?.TMPDIR as string;
+		expect(command).toContain(`(allow file-write* (subpath "${runTmp}"))`);
+		for (const root of sandboxTempRoots()) {
+			expect(command).not.toContain(`(allow file-write* (subpath "${root}"))`);
+		}
+		rmSync(runDir, { recursive: true, force: true });
 	});
 
 	it("uses explicit readRoots when given", async () => {

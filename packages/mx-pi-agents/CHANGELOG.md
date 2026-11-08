@@ -150,6 +150,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first, and every macOS name variant of the resolved path is checked. A `~user`
   path is refused rather than guessed. Previously `~/.ssh/id_rsa` passed the scope
   check while reading the real home file.
+- A sandboxed `bash` no longer inherits the parent environment (API keys, tokens,
+  session ids). It receives only the shell allowlist — `PATH`, `LANG`, `TERM`,
+  `SHELL`, `USER`, `LOGNAME`, `HOME`, `npm_config_cache` and `LC_*` — with `TMPDIR`
+  pinned to the run's private temp directory. An unsandboxed `bash` is unchanged.
+- A sandboxed run writes only to a private temp directory created for it and removed
+  after the run; the shared `/tmp` / `$TMPDIR` is no longer a write root in the
+  seatbelt profile or the `bwrap` argv.
 
 ### Security
 

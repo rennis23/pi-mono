@@ -12,8 +12,8 @@
  * unsandboxed — `sandbox: os` means sandboxed or not at all.
  */
 
-import { existsSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 
@@ -46,6 +46,51 @@ export const SEATBELT_SYSTEM_READ_ROOTS: readonly string[] = uniqueRoots([
 	...packageManagerReadRoots(),
 	...sandboxTempRoots(),
 ]);
+
+/**
+ * Environment variables a sandboxed shell is allowed to see.
+ *
+ * The parent env carries the operator's secrets (API keys, tokens, session ids),
+ * and a sandboxed `bash` is not confined by the OS at the level of its
+ * environment: anything it can read it can print or exfiltrate through argv.
+ * Only the variables a shell needs to start are passed, plus `LC_*` for locale
+ * handling. `TMPDIR` is pinned to the run's private temp directory.
+ */
+export const ENV_ALLOW: readonly string[] = [
+	"PATH",
+	"LANG",
+	"TERM",
+	"SHELL",
+	"USER",
+	"LOGNAME",
+	"HOME",
+	"npm_config_cache",
+];
+
+/** Env for sandboxed bash: allowlist only, TMPDIR pinned to the run temp dir. */
+export function sandboxEnv(parent: NodeJS.ProcessEnv, runTmp: string): NodeJS.ProcessEnv {
+	const out: NodeJS.ProcessEnv = {};
+	for (const key of ENV_ALLOW) {
+		const value = parent[key];
+		if (value !== undefined) out[key] = value;
+	}
+	for (const key of Object.keys(parent)) {
+		if (key.startsWith("LC_") && parent[key] !== undefined) out[key] = parent[key];
+	}
+	out.TMPDIR = runTmp;
+	return out;
+}
+
+/** Create the private temp directory one sandboxed run writes to. */
+function createRunTempDir(): string {
+	let base = tmpdir();
+	try {
+		base = realpathSync(base);
+	} catch {
+		/* an unresolvable temp root is used as-is */
+	}
+	return mkdtempSync(join(base, "mx-pi-run-"));
+}
 
 /**
  * The package-manager prefix a binary was installed under.
@@ -156,13 +201,13 @@ function seatbeltQuote(value: string): string {
 }
 
 /**
- * Scratch directories a sandboxed child may read and write.
+ * Scratch directories a sandboxed child may read.
  *
- * A test runner routinely needs scratch space outside the project. The system
- * temp directory is the only such place granted, and it is resolved through
- * realpath because seatbelt matches real paths (`/tmp` is a symlink to
- * `/private/tmp` on macOS). `TMPDIR` is honoured so the caller's own temp root is
- * covered rather than guessed.
+ * The system temp directory is readable so path resolution and the toolchain can
+ * still see their scratch space, but it is no longer a write root: a sandboxed run
+ * writes only to its own private temp directory (`runTmp`), which is resolved
+ * through realpath because seatbelt matches real paths (`/tmp` is a symlink to
+ * `/private/tmp` on macOS).
  */
 export function sandboxTempRoots(tmp: string | undefined = process.env.TMPDIR): string[] {
 	const roots: string[] = [];
@@ -201,13 +246,18 @@ export function packageManagerReadRoots(
  *
  * Default deny, then: read the immutable system allowlist plus the run's read
  * roots (never a bare host-wide `(allow file-read*)`), write only under
- * `writeRoots` plus the system temp directory, and no network. A global metadata
- * read (`file-read-metadata`) is granted so path resolution can stat every
- * ancestor of an entry path — metadata only, never contents. Writes are the
+ * `writeRoots` plus the run's private temp directory, and no network. A global
+ * metadata read (`file-read-metadata`) is granted so path resolution can stat
+ * every ancestor of an entry path — metadata only, never contents. Writes are the
  * primary capability this sandbox bounds; read confinement is per-root plus the
- * documented system allowance.
+ * documented system allowance. The shared temp directory is not a write root: the
+ * only scratch space a sandboxed run can write to is `runTmp`.
  */
-export function buildSeatbeltProfile(writeRoots: readonly string[], readRoots: readonly string[] = []): string {
+export function buildSeatbeltProfile(
+	writeRoots: readonly string[],
+	readRoots: readonly string[] = [],
+	runTmp: string,
+): string {
 	const lines = ["(version 1)", "(deny default)"];
 
 	lines.push(`; system runtime surface; grants process startup, not user data`);
@@ -225,9 +275,9 @@ export function buildSeatbeltProfile(writeRoots: readonly string[], readRoots: r
 	lines.push("(allow sysctl-read)");
 	lines.push("(allow mach-lookup)");
 
-	lines.push("; writes only under the run scope plus the system temp directory");
+	lines.push("; writes only under the run scope plus the run's private temp directory");
 	lines.push("(deny file-write*)");
-	for (const root of uniqueRoots([...writeRoots, ...sandboxTempRoots()])) {
+	for (const root of uniqueRoots([...writeRoots, runTmp])) {
 		lines.push(`(allow file-write* (subpath ${seatbeltQuote(root)}))`);
 	}
 
@@ -242,19 +292,25 @@ export function buildSeatbeltArgv(profilePath: string, command: string): string[
 	return ["-f", profilePath, "/bin/bash", "-c", command];
 }
 
-/** Build the `bwrap` argv that runs `command` with the given writable roots. */
+/**
+ * Build the `bwrap` argv that runs `command` with the given writable roots.
+ *
+ * The only scratch space the child can write to is `runTmp`, its own private temp
+ * directory; the shared host temp directory is not bound at all.
+ */
 export function buildBwrapArgv(
 	command: string,
 	writeRoots: readonly string[],
-	readRoots: readonly string[] = [],
+	readRoots: readonly string[],
 	cwd: string,
+	runTmp: string,
 ): string[] {
 	const args = ["--unshare-all", "--die-with-parent"];
 	// Read-only binds for the system runtime and the run scope. There is no
 	// `--ro-bind / /`: the child sees only these roots.
 	for (const root of uniqueRoots([...BWRAP_READ_ROOTS, ...readRoots])) args.push("--ro-bind", root, root);
 	args.push("--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp");
-	for (const root of uniqueRoots(writeRoots)) args.push("--bind", root, root);
+	for (const root of uniqueRoots([...writeRoots, runTmp])) args.push("--bind", root, root);
 	args.push("--chdir", cwd, "/bin/bash", "-c", command);
 	return args;
 }
@@ -305,6 +361,8 @@ export interface SandboxBashOptions {
 	readRoots?: readonly string[];
 	/** Platform override for tests. */
 	platform?: NodeJS.Platform;
+	/** Parent environment to scrub. Defaults to `process.env`. */
+	env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -322,23 +380,32 @@ export function createSandboxedBashOperations(local: BashOperations, options: Sa
 	}
 
 	return {
-		exec(command, cwd, execOptions) {
+		async exec(command, cwd, execOptions) {
 			const writeRoots = options.writeRoots.length > 0 ? options.writeRoots : [cwd];
 			const readRoots = options.readRoots !== undefined ? options.readRoots : writeRoots;
-			if (backend === "seatbelt") {
-				// The profile is passed inline via `-p` so no temp file is created
-				// inside the target repository.
-				const profile = buildSeatbeltProfile(writeRoots, readRoots);
-				return local.exec(
-					`sandbox-exec -p ${shellQuote(profile)} /bin/bash -c ${shellQuote(command)}`,
-					cwd,
-					execOptions,
-				);
+			// One private temp directory per run: the shared `/tmp` is not writable
+			// from inside the sandbox, and the env handed to the child is the allowlist
+			// rather than the parent environment.
+			const runTmp = createRunTempDir();
+			try {
+				const env = sandboxEnv(options.env ?? process.env, runTmp);
+				if (backend === "seatbelt") {
+					// The profile is passed inline via `-p` so no temp file is created
+					// inside the target repository.
+					const profile = buildSeatbeltProfile(writeRoots, readRoots, runTmp);
+					return await local.exec(
+						`sandbox-exec -p ${shellQuote(profile)} /bin/bash -c ${shellQuote(command)}`,
+						cwd,
+						{ ...execOptions, env },
+					);
+				}
+				const bwrap = whichBinary("bwrap", process.env.PATH);
+				if (bwrap === undefined) throw new Error(sandboxUnavailableReason(platform));
+				const argv = buildBwrapArgv(command, writeRoots, readRoots, cwd, runTmp);
+				return await local.exec([bwrap, ...argv].map(shellQuote).join(" "), cwd, { ...execOptions, env });
+			} finally {
+				rmSync(runTmp, { recursive: true, force: true });
 			}
-			const bwrap = whichBinary("bwrap", process.env.PATH);
-			if (bwrap === undefined) throw new Error(sandboxUnavailableReason(platform));
-			const argv = buildBwrapArgv(command, writeRoots, readRoots, cwd);
-			return local.exec([bwrap, ...argv].map(shellQuote).join(" "), cwd, execOptions);
 		},
 	};
 }

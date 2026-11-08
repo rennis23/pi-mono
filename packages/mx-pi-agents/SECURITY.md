@@ -285,9 +285,9 @@ assume:
   inline `node -e` worked because it resolves no entry file.
   Two further allowances are scratch space and a cache, not user data. The system
   temp directory (`TMPDIR`, `/tmp`, `/private/tmp`, resolved through realpath) is
-  readable **and** writable, because a test runner routinely needs scratch space
-  outside the project; it is world-writable sticky-bit scratch, not user data. The
-  npm cache (`~/.npm`, or `npm_config_cache`) is readable but **not** writable,
+  readable, but it is **not** writable: a sandboxed run writes only to the private
+  temp directory created for it, which is removed after the run. The npm cache
+  (`~/.npm`, or `npm_config_cache`) is readable but **not** writable,
   because npm reads its cache and `~/.npmrc` and a sandboxed child must not be
   able to poison a cache the unsandboxed host later reads. None of this is a
   host-wide content read, and reads are not the boundary this sandbox enforces —
@@ -317,10 +317,17 @@ assume:
   could read it while the child runs. It contains no secrets by construction
   beyond the definition body the operator already has on disk.
 - Within `sandbox: os`, the system temp directory (`TMPDIR`, `/tmp`,
-  `/private/tmp`, resolved through realpath) is readable **and** writable. A test
-  runner routinely needs scratch space outside the project; this is world-writable
-  sticky-bit scratch, not user data, and it is the only write location beyond the
-  run scope.
+  `/private/tmp`, resolved through realpath) is readable but deliberately **not**
+  writable. A sandboxed run writes only to its own private temp directory
+  (`mkdtemp` under the resolved temp root, removed in `finally`), so a child cannot
+  leave files in the shared world-writable scratch space that the unsandboxed host
+  later reads.
+- Within `sandbox: os`, a shell receives only the environment allowlist (`PATH`,
+  `LANG`, `TERM`, `SHELL`, `USER`, `LOGNAME`, `HOME`, `npm_config_cache`, plus
+  `LC_*`) with `TMPDIR` pinned to the run's private temp directory. The parent's
+  API keys, tokens and session variables are not passed. An **unsandboxed** `bash`
+  still inherits the full parent environment — that vector is refused by the scope
+  policy rather than scrubbed.
 - Within `sandbox: os`, the npm cache (`~/.npm`, or `npm_config_cache`) is
   readable but deliberately not writable. npm reads its cache and `~/.npmrc`; it
   is read-only so a sandboxed child cannot poison a cache the unsandboxed host
@@ -350,7 +357,7 @@ assume:
 | Default scope is `[cwd]` | A missing declaration must mean the run's own directory, never "everything". Absent and empty stay distinct: absent is cwd, `scope: []` is a refusal. |
 | A vector that cannot be path-confined is refused | Unsandboxed `bash` and `isolation: subprocess` have no hook this extension can check, so the run is refused (`scope-unenforceable`) unless the operator types the explicit `/` ceiling. Pretending to confine them would make invariant 11 false. |
 | A `/` ceiling overrides the cwd default only for unconfineable vectors | It is the one typed "unrestricted" declaration. A definition-declared narrow scope combined with an unconfineable vector is still refused: a definition may tighten, never loosen. |
-| macOS read narrowing uses the `system.sb` import plus the run scope | Hand-listing runtime paths (`/usr`, `/System`, dyld, …) aborts bash: seatbelt needs the rest of the system runtime surface. `system.sb` grants process startup but not user data, so content reads outside the run scope (`$HOME`, `~/.pi`, another project, another temp dir) stay denied. The named exceptions are the global metadata-only read, the readable/writable system temp directory, and the read-only npm cache (see Section 3). |
+| macOS read narrowing uses the `system.sb` import plus the run scope | Hand-listing runtime paths (`/usr`, `/System`, dyld, …) aborts bash: seatbelt needs the rest of the system runtime surface. `system.sb` grants process startup but not user data, so content reads outside the run scope (`$HOME`, `~/.pi`, another project, another temp dir) stay denied. The named exceptions are the global metadata-only read, the readable system temp directory, and the read-only npm cache (see Section 3). |
 | Enforcement at `ToolDefinition.execute`, not the operations hook | pi's `GrepOperations`/`FindOperations` never receive the model-supplied search root, so wrapping operations cannot confine grep/find. `execute` sees every raw argument; an unrecognized shape is refused, never passed through. |
 | Child settings manager refuses an empty agent dir | `join("", "settings.json")` resolves against `process.cwd()`. Found during the hardening review: the runner was constructed with `agentDir: ""`, which would have read the target repository's settings. The manager now throws instead of resolving, and `index.ts` threads a single resolved dir everywhere. Regression tests: `src/security.test.ts` (invariant 1) and `src/runners/in-process.test.ts`. |
 
@@ -370,8 +377,8 @@ sandbox: os
 - macOS: requires `/usr/bin/sandbox-exec` (present on stock macOS).
 - Linux: requires `bwrap` (bubblewrap) on `PATH`.
 - The sandbox reads the system runtime allowance, the run scope and a global
-  metadata-only rule, and writes only under the run scope plus the system temp
-  directory. Network is denied. Path resolution must stat every ancestor of every
+  metadata-only rule, and writes only under the run scope plus the run's private
+  temp directory. Network is denied. Path resolution must stat every ancestor of every
   path, so a bare `(allow file-read-metadata)` is present — metadata only, never
   contents; content reads stay per-root and there is no bare
   `(allow file-read*)`. On macOS the allowance is the built-in `system.sb`
@@ -383,10 +390,15 @@ sandbox: os
   `<prefix>/etc/openssl@3/openssl.cnf`, without which OpenSSL initialisation
   aborts); the npm cache (`~/.npm`, or `npm_config_cache`) is readable but not
   writable, so a sandboxed child cannot poison a cache the host later reads. The
-  temp directory is readable and writable — scratch space a runner needs; user
-  data outside the run scope is denied. On Linux the allowlisted system roots are
+  shared temp directory is readable but not writable — scratch writes go to the
+  run's own private temp directory, created per run and removed after it. On Linux
+  the allowlisted system roots are
   `--ro-bind` read-only, the run scope is bind-mounted writable, and `--tmpfs
   /tmp` provides the scratch space (unchanged).
+- A sandboxed shell sees only the environment allowlist (`PATH`, `LANG`, `TERM`,
+  `SHELL`, `USER`, `LOGNAME`, `HOME`, `npm_config_cache`, `LC_*`) with `TMPDIR`
+  pinned to its private run temp dir; the parent environment's API keys, tokens and
+  session variables are not passed through.
 - `/mx-pi-agents status` reports whether a backend is available.
 - If no backend is available, any run requesting `sandbox: os` is refused with
   `sandbox-unavailable`.
