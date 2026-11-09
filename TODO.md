@@ -1,6 +1,6 @@
 # TODO
 
-Follow-ups from PR #1 review (https://github.com/rennis23/pi-mono/pull/1).
+Follow-ups from PR #1 review (<https://github.com/rennis23/pi-mono/pull/1>).
 
 ## Lima sandbox: restore egress filtering (deferred)
 
@@ -30,4 +30,3 @@ with DNS-filtered `--allow-host` lists from `sandbox/allowlists/*.txt`.
 - [ ] `test/setup.ts`: drop the empty `beforeEach(() => {})` until real shared setup is needed.
 - [ ] `.husky/pre-commit` / `.husky/pre-push`: replace `cmd; if [ $? -ne 0 ]` with `if ! cmd; then`.
 - [ ] Root `package.json`: rename `"publish"` script to `publish:all` to avoid shadowing npm's built-in command.
-- [ ] `packages/pi-hello/hello.test.ts`: change import `./index.js` to `./index` for clarity.

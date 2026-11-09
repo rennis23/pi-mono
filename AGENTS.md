@@ -24,6 +24,11 @@ Instructions for AI coding agents working on this repository.
 | `npm run check`          | Format, lint (Biome), and type-check (tsc)  |
 | `npm test`               | Run all tests                               |
 | `npm run coverage`       | Run tests with V8 coverage                  |
+| `npm run security`       | Run package, dependency, and CodeQL checks  |
+| `npm run security:packages` | Validate public package artifacts       |
+| `npm run security:codeql` | Run local CodeQL and SARIF gate            |
+| `npm run mutation:changed` | Mutate changed package source only        |
+| `npm run mutation:survivors` | Report mutation gaps                    |
 | `npm run release:patch`  | Bump patch version across all packages      |
 | `npm run release:minor`  | Bump minor version across all packages      |
 | `npm run release:major`  | Bump major version across all packages      |
@@ -35,9 +40,11 @@ Always run `npm run check` and `npm test` before committing. The Husky pre-commi
 ```
 pi-mono/
 ├── packages/          # Workspace packages (each is a pi extension)
-│   └── pi-hello/      # Example extension
-├── scripts/           # sync-versions.js, release.mjs
+│   └── mx-pi-context-stats/ # Context/token/cost stats widget
+├── scripts/           # release, security, and mutation helpers
 ├── test/              # Shared test setup (setup.ts)
+├── .circleci/         # CircleCI mutation-testing pipeline
+├── .github/           # Pull-request CI and CodeQL configuration
 ├── biome.json         # Shared formatter/linter config
 ├── tsconfig.base.json # Shared TypeScript config
 └── vitest.config.ts   # Shared test runner config
@@ -52,6 +59,7 @@ Biome is the single source of truth for formatting and linting. Key settings (se
 - **`noExplicitAny`:** off — `any` is allowed
 - **`noNonNullAssertion`:** off — `!` assertions are allowed
 - **`useConst`:** error — always prefer `const`
+- **Repository scope:** quality and security tooling covers `packages/` and explicitly excludes `sandbox/`
 
 Run `npm run check` to auto-fix formatting and lint issues (`biome check --write`).
 
@@ -59,8 +67,14 @@ Run `npm run check` to auto-fix formatting and lint issues (`biome check --write
 
 ### Package naming
 
-- Directory: `packages/pi-<name>/`
-- npm name: `@rennis23/pi-<name>`
+Every extension and skill in this repository uses the `mx-pi-` prefix. All
+user-visible names must begin with `mx-pi-`:
+
+- Directory: `packages/mx-pi-<name>/`
+- npm name: `@rennis23/mx-pi-<name>`
+- Registered commands and CLI flags: must start with `mx-pi-` (e.g. command
+  `/mx-pi-context-stats`, flags `--mx-pi-context-stats-rows`)
+- Skills (e.g. under `sandbox/skills/`): `mx-pi-<name>/SKILL.md`
 - Include `"pi": { "extensions": ["./index.ts"] }` in `package.json`
 
 ### Extension structure
@@ -86,6 +100,21 @@ export default function myExtension(pi: ExtensionAPI) {
 - Shared setup lives in `test/setup.ts`
 - Vitest is configured with `clearMocks`, `restoreMocks`, and `unstubGlobals`
 - Coverage excludes `node_modules`, `dist`, `.pi`, `*.test.ts`, and `*.d.ts`
+- Root script tests use `scripts/**/*.test.mjs`; package coverage remains scoped to `packages/`
+- Package artifacts are checked with `npm run security:packages`; tests and harnesses must not ship
+
+### Security and mutation testing
+
+- `npm run security:packages` validates every direct workspace under `packages/`, including its `npm pack --dry-run` contents.
+- `npm run security:audit` blocks high and critical production dependency advisories.
+- `npm run security:codeql` uses the local CodeQL CLI with `security-extended` queries and fails on SARIF findings. The local pre-push hook skips this one check only when the CLI is unavailable; CI remains authoritative.
+- The CodeQL command honours `CODEQL_BIN` when the CLI is not on `PATH`. `github/codeql-action/init` does not put its bundled CLI on `PATH`, so the CI job passes that step's `codeql-path` output into the script as `CODEQL_BIN`.
+- The CI CodeQL job does not upload SARIF. This repository runs GitHub's default CodeQL setup, and GitHub rejects CodeQL analyses from advanced configurations while default setup is enabled. The job still fails on findings because the shared SARIF gate runs before publication.
+- `npm run mutation:changed` compares package source against `HEAD` locally. In CI the
+  CircleCI job passes the merge-base with the base branch, so a branch build mutates all
+  of its changes instead of only the last commit. It skips tests, reports, generated
+  files, and `sandbox/`.
+- Full mutation testing is available with `npm run mutation`, but changed-source mutation is the mandatory PR/local gate.
 
 ### Versioning
 
@@ -94,4 +123,8 @@ All packages share the same version. Use the `release:*` scripts — never bump 
 ## Git hooks
 
 - **pre-commit:** runs `npm run check` (Biome format + lint + tsc)
-- **pre-push:** runs `npm test`
+- **pre-push:** runs tests, package policy, dependency audit, changed-source mutation, and local CodeQL when installed.
+
+CI defines separate required quality, package-security, CodeQL, and dependency-review jobs
+on GitHub Actions, plus the `mutation-changed` job on CircleCI. Configure those check names
+as required checks in GitHub branch protection.

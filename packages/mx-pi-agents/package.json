@@ -1,0 +1,57 @@
+{
+	"name": "@rennis23/mx-pi-agents",
+	"version": "0.1.0",
+	"description": "Pi extension. Switch the main session between named agent definitions that set the system prompt and preset tools, model, thinking, skills and context files.",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"agents",
+		"persona",
+		"system-prompt",
+		"subagent"
+	],
+	"type": "module",
+	"license": "MIT",
+	"author": "rennis23",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/rennis23/pi-mono.git",
+		"directory": "packages/mx-pi-agents"
+	},
+	"homepage": "https://github.com/rennis23/pi-mono/tree/master/packages/mx-pi-agents#readme",
+	"bugs": {
+		"url": "https://github.com/rennis23/pi-mono/issues"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"test": "vitest run"
+	},
+	"files": [
+		"index.ts",
+		"src/**/*.ts",
+		"!src/**/*.test.ts",
+		"agents/**/*.md",
+		"README.md",
+		"LICENSE",
+		"CHANGELOG.md",
+		"SECURITY.md"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"dependencies": {
+		"@rennis23/mx-pi-settings": "^0.1.0"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.80.0",
+		"@earendil-works/pi-tui": ">=0.80.0"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "^1.0.3",
+		"@earendil-works/pi-tui": "^1.0.3"
+	}
+}

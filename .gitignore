@@ -21,8 +21,15 @@ packages/*/node_modules
 # Agent metadata
 .claude/
 
+# Design docs (specs/plans) are local-only working notes: they stay on disk
+# but are not tracked in the repository.
+docs/superpowers/
+
 # Package specific
 .npm/
 coverage/
 .nyc_output/
+.codeql/
+.stryker-tmp/
+reports/
 packages/*/dist/
